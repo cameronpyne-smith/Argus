@@ -51,6 +51,7 @@ ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
+    node_modules/.bin/agent-browser install --with-deps && \
     (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
@@ -108,6 +109,10 @@ RUN chmod -R a+rX /opt/hermes && \
 # Deps are already installed in the cached layer above; `--no-deps` makes
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
+
+# ---------- argus alias ----------
+RUN ln -sf /opt/hermes/.venv/bin/hermes /opt/hermes/.venv/bin/argus && \
+    ln -sf /opt/hermes/.venv/bin/argus /usr/local/bin/argus
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
