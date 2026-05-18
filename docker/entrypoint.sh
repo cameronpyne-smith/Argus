@@ -80,10 +80,8 @@ if [ ! -f "$HERMES_HOME/config.yaml" ]; then
     cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
 fi
 
-# SOUL.md
-if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
-    cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
-fi
+# SOUL.md — always overwrite from the image so repo changes take effect on restart
+cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
 
 # auth.json: bootstrap from env on first boot only.  Used by orchestrators
 # (e.g. provisioning a Hermes VPS from an account-management service) that
