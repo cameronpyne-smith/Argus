@@ -87,6 +87,12 @@ elif [ ! -f "$HERMES_HOME/SOUL.md" ] && [ -f "$INSTALL_DIR/docker/SOUL.md" ]; th
     cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
 fi
 
+# site-config skill — always overwrite from the image (gitignored but present in local builds)
+if [ -f "$INSTALL_DIR/agent-config/site-config.md" ]; then
+    mkdir -p "$HERMES_HOME/skills/site-config"
+    cp "$INSTALL_DIR/agent-config/site-config.md" "$HERMES_HOME/skills/site-config/SKILL.md"
+fi
+
 # auth.json: bootstrap from env on first boot only.  Used by orchestrators
 # (e.g. provisioning a Hermes VPS from an account-management service) that
 # need to seed the OAuth refresh credential non-interactively, instead of

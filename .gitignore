@@ -1,4 +1,7 @@
 .DS_Store
+
+# Site-specific credentials (copy from agent-config/site-config.md.example)
+agent-config/site-config.md
 /venv/
 /_pycache/
 *.pyc*

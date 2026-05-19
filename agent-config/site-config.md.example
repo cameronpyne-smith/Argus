@@ -1,0 +1,34 @@
+---
+name: site-config
+title: Site Configuration
+description: Target site URL, credentials, and known routes for QA testing
+---
+
+# Site Configuration
+
+Copy this file to `site-config.md` (gitignored) and fill in your details.
+
+## Target Site
+
+- Base URL: https://your-site.example.com
+- Login URL: https://your-site.example.com/login
+
+## Credentials
+
+- Email: user@example.com
+- Password: your-password
+
+## Login Redirect Behaviour
+
+Redirecting to /login is NOT a bug at the start of a session — unauthenticated visits always
+redirect. Log in and continue testing.
+
+It IS a bug if you were already authenticated and navigating between pages, then get
+unexpectedly redirected to login.
+
+## Known Routes
+
+Add known routes here to help verify navigation succeeded after clicking links:
+
+- Dashboard: /dashboard
+- Settings: /settings
