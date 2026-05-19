@@ -16,7 +16,8 @@ their value directly. The correct pattern is: type to filter, then click the mat
 
 1. Find the combobox input ref via snapshot
 2. `browser_type <ref> <search-text>` — filters the dropdown
-3. Wait briefly for items to render (the dropdown populates asynchronously)
+3. **Take a snapshot immediately** — this confirms the dropdown items have rendered. If no
+   `vaadin-combo-box-item` appears in the snapshot, wait 1s and re-snapshot before clicking.
 4. Click the item via `browser_console`:
 
 ```javascript
@@ -37,7 +38,18 @@ their value directly. The correct pattern is: type to filter, then click the mat
 })();
 ```
 
-## Dependent / Disabled Fields
+## Committed Selection vs Typed Text
+
+A Vaadin combobox has two states: **text typed** (not committed) and **item selected** (committed).
+Only a committed selection registers as valid input to the Svelte reactive state.
+
+Signs a selection is NOT committed:
+- The combobox shows typed text but no matching item was clicked
+- Dependent fields (e.g. phone number) remain disabled
+- "Done" button stays disabled despite the field appearing filled
+
+**If the vaadin-combo-box-item click throws a JS error:** the dropdown likely hadn't rendered yet.
+Re-snapshot to confirm items are visible, then retry the click. Never assume typing alone is enough.
 
 Fields are often disabled until a parent field is filled. Common patterns:
 - City/Region is disabled until Country is selected
