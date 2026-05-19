@@ -15,17 +15,67 @@ summary: General workflow and principles for browser-based QA testing — snapsh
 2. **Re-snapshot after every click.** Confirm the outcome before drawing conclusions.
    A click that produces no change is itself a finding.
 
-3. **Test like a real user.** Use nav links, buttons, and forms as a user would.
+3. **Re-snapshot after receiving a user reply.** Assume all refs are stale when resuming.
+   If the page is blank or you're at login, re-login and navigate back before continuing.
+
+4. **Test like a real user.** Use nav links, buttons, and forms as a user would.
    If a nav link is broken, that IS a bug — don't route around it.
 
-4. **Exhaust alternatives before reporting blocked.** If one approach fails, try:
+5. **Never use visual coordinate clicking (browser_vision).** Always use refs or JS.
+
+6. **Exhaust alternatives before reporting blocked.** If one approach fails, try:
    - Re-snapshot and retry with fresh ref
-   - JS dispatchEvent instead of browser_click
-   - Navigating directly by URL as a fallback (but flag if the UI link was broken)
+   - JS dispatchEvent instead of browser_click (see `svelte-spa-testing` skill)
+   - Navigating directly by URL as a last resort (but flag if the UI link was broken)
+
+## Clicking Elements
+
+- **`browser_click <ref>`** — use for nav links, radio buttons, checkboxes, standard buttons
+- **If `browser_click` silently does nothing** — the site may filter synthetic events (e.g. Svelte). Consult `svelte-spa-testing` skill.
+- **If `browser_click` fails with "unknown ref"** — ref is stale, re-snapshot and retry
+- **Fallback for links by text** (only after re-snapshot + retry fails):
+  ```javascript
+  (function(){const link=[...document.querySelectorAll('a')].find(a=>a.textContent.trim().includes('TARGET_TEXT'));link?.click();})();
+  ```
+  If this also fails, report it as a navigation bug.
+
+## Reading a Page
+
+**Always use `snapshot -i`** (interactive elements only) not plain `snapshot`. Plain snapshot returns structural noise including CSS classes that look meaningful but aren't.
+
+```bash
+agent-browser snapshot -i          # interactive elements only — use this
+agent-browser snapshot -i -u       # also shows href on links
+agent-browser snapshot -i -c       # compact, no empty nodes
+```
+
+**Use `screenshot` + `browser_vision` to confirm visual state** before reporting any bug. The accessibility tree can be misleading — CSS class names like `disabled` are styling only, not proof an element is broken. Always confirm visually or by attempting the interaction.
+
+```bash
+agent-browser screenshot /tmp/page.png   # take a screenshot
+# then use browser_vision to analyse what you actually see
+```
+
+**Wait for the page to settle** before snapshotting after navigation or async actions:
+```bash
+agent-browser wait --load networkidle
+agent-browser snapshot -i
+```
+
+## Verifying Bugs
+
+**Do not report something as a bug based on the accessibility tree alone.** The snapshot reflects DOM structure, not user experience. Common false positives:
+
+- CSS class `disabled` on an element — this is styling only, not a real disabled state. Test by actually clicking or interacting with it.
+- Missing elements in the snapshot — custom components (Svelte, Vaadin) often render incompletely in the accessibility tree. Use `eval` or `screenshot` to verify.
+- Empty snapshot — the page may still be loading. Use `wait --load networkidle` and re-snapshot.
+
+**To confirm a bug is real:**
+1. Take a `screenshot` and use `browser_vision` to see it as a user would
+2. Actually attempt the interaction — does it fail in the way you expect?
+3. Check the browser console for real errors (not just `[warning]` logs)
 
 ## Login Flow
-
-1. Navigate to the login URL (from site-config)
 2. Snapshot → find email and password input refs
 3. Type credentials into both fields
 4. Snapshot → confirm submit button is enabled (not disabled)

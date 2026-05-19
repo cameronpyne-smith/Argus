@@ -2389,7 +2389,7 @@ def browser_snapshot(
     # Build command args based on full flag
     args = []
     if not full:
-        args.extend(["-c"])  # Compact mode
+        args.extend(["-i", "-c"])  # Interactive elements only + compact (no Svelte/Vaadin noise)
 
     result = _run_browser_command(effective_task_id, "snapshot", args)
 
