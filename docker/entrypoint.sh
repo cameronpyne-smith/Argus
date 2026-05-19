@@ -81,7 +81,11 @@ if [ ! -f "$HERMES_HOME/config.yaml" ]; then
 fi
 
 # SOUL.md — always overwrite from the image so repo changes take effect on restart
-cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
+if [ -f "$INSTALL_DIR/SOUL.md" ]; then
+    cp "$INSTALL_DIR/SOUL.md" "$HERMES_HOME/SOUL.md"
+elif [ ! -f "$HERMES_HOME/SOUL.md" ] && [ -f "$INSTALL_DIR/docker/SOUL.md" ]; then
+    cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
+fi
 
 # auth.json: bootstrap from env on first boot only.  Used by orchestrators
 # (e.g. provisioning a Hermes VPS from an account-management service) that
