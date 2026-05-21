@@ -10,6 +10,16 @@ summary: How to test the Main Terms page — field editing, async save notificat
 The Main Terms page is reached after completing the Hire a Worker wizard. It is a
 multi-tab form for configuring the employment contract. Changes save asynchronously.
 
+## Required Skills — Read These First
+
+Before starting, load all of these:
+
+- `site-config` — login credentials, org UUID, base URL
+- `hire-worker-wizard` — how to reach this page (complete the wizard first)
+- `svelte-spa-testing` — dispatchEvent pattern for Svelte buttons
+- `vaadin-web-components` — combobox interaction pattern
+- `web-qa-workflow` — async save handling, snapshot discipline, bug reporting
+
 **To get here:** complete the `hire-worker-wizard` skill first. The URL is:
 `/organisations/<org-uuid>/contract-quote/<contract-uuid>`
 

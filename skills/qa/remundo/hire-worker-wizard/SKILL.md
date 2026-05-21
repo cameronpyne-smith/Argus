@@ -10,8 +10,13 @@ summary: How to navigate the Hire a Worker wizard from worker type selection thr
 Navigate to the Hire a Worker section from the dashboard side nav. The wizard creates a contract
 and ends on the Main Terms page.
 
-See `svelte-spa-testing` for clicking Svelte nav buttons.
-See `vaadin-web-components` for combobox interactions.
+## Required Skills — Read These First
+
+Before starting, load all of these:
+
+- `site-config` — login credentials, org UUID, base URL
+- `svelte-spa-testing` — dispatchEvent pattern for Svelte buttons
+- `vaadin-web-components` — combobox interaction pattern
 
 ## Advancing Through Steps (Done button)
 
