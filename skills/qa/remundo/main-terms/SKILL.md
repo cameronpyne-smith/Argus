@@ -140,3 +140,15 @@ pattern. Verify by checking the URL changes or a notification appears.
 - Async saves that take 2-3 seconds — this is expected behaviour
 - Read-only fields that cannot be edited — these are intentional
 - Tabs that load slightly slowly — wait for networkidle before concluding blank
+
+## Running the Full Test
+
+Work through all fields and tabs without stopping. When the full pass is complete,
+produce a single report listing:
+
+1. Each field/section tested
+2. The edge cases tried
+3. Any bugs found (with URL, steps to reproduce, expected vs actual, severity)
+4. Any section skipped and why
+
+Do not stop mid-test to ask for direction — complete the full pass, then report.
