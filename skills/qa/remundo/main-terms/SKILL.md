@@ -14,18 +14,52 @@ multi-tab form for configuring the employment contract. Changes save asynchronou
 
 Before starting, load all of these:
 
-- `site-config` — login credentials, org UUID, base URL
-- `hire-worker-wizard` — how to reach this page (complete the wizard first)
+- `site-config` — login credentials, org UUID, base URL, and known good contract URL
 - `svelte-spa-testing` — dispatchEvent pattern for Svelte buttons
 - `vaadin-web-components` — combobox interaction pattern
 - `web-qa-workflow` — async save handling, snapshot discipline, bug reporting
 
-**To get here:** complete the `hire-worker-wizard` skill first. The URL is:
-`/organisations/<org-uuid>/contract-quote/<contract-uuid>`
+## ⚡ CRITICAL: Execute, Don't Narrate
 
-**If the wizard fails to redirect** (e.g. gets stuck on the step navigator with no error),
-do not stop — use the known good contract URL from your `site-config` skill and continue
-testing from there. Note in your report that the wizard redirect failed.
+Work through every field and tab making tool calls. When the full pass is complete,
+write one report. Do not narrate what you are about to do — just do it.
+
+- No acknowledgement messages ("I will now...", "Proceeding...", "Continuing...")
+- No mid-test summaries or check-ins
+- If a field won't respond after 2 attempts, note it as "uneditable" and move on
+- Do NOT use `browser_vision` for initial field discovery — use `browser_console`
+  with `document.querySelectorAll` to enumerate inputs programmatically
+
+## Getting to the Main Terms Page
+
+**Do not run the wizard** — navigate directly to the known good contract URL from
+`site-config`. The wizard has a known 401 bug that wastes turns. Use the fallback URL
+immediately after login.
+
+## Important: Snapshot May Return Empty
+
+This page renders content outside the `#app` Svelte root, which causes `browser_snapshot`
+to return an empty accessibility tree even when the page is fully loaded.
+
+**If `browser_snapshot` returns empty or near-empty:**
+1. Do NOT conclude the page is blank — the DOM has content
+2. Run `browser_console: document.body.innerText.substring(0, 1000)` to confirm content is present
+3. Use `browser_console` to find and interact with elements directly via `document.querySelector`
+   rather than relying on snapshot refs
+4. Use `browser_vision` (screenshot) to see the page visually and identify fields to interact with
+
+## Discovering Fields Programmatically
+
+After navigating to the contract page, use this `browser_console` call to enumerate
+all editable inputs without needing a visual screenshot:
+
+```javascript
+[...document.querySelectorAll('input:not([disabled]), textarea:not([disabled]), vaadin-text-field, vaadin-date-picker, vaadin-combo-box, vaadin-integer-field, vaadin-number-field')]
+  .map(el => ({tag: el.tagName, id: el.id, name: el.name||el.getAttribute('label')||'', value: el.value||el._value||''}))
+```
+
+This returns all interactive inputs. Use the `id` or `label` to identify fields, then
+interact using `document.querySelector('#id')` or by Vaadin component tag.
 
 ## Page Structure
 
@@ -79,15 +113,19 @@ continue with the next field:
 
 Based on previous exploration — **re-snapshot to get current field list** as the UI may have changed:
 
-- **Candidate name / email** — likely read-only; verify editing is blocked
-- **Annual Salary** — numeric; minimum GBP 60,000 enforced (test the boundary: 59999 should fail or warn)
+- **Candidate name / email** — read-only (set during wizard); skip if not editable
+- **Annual Salary** — likely read-only (set during wizard); if uneditable after 2 tries, skip it and note it
 - **Currency** — Vaadin combobox; test changing to a non-GBP currency and saving
 - **Start Date** — date picker; test past dates, far-future dates
-- **Employment type** — likely read-only (set during wizard)
+- **Employment type** — read-only (set during wizard); skip if not editable
 - **Job Title** — text or combobox; test long strings, special chars
 - **Benefits / Allowances** — if editable, test adding/removing items
 - **Probation period** — numeric (days/months); test 0, negative, very large values
 - **Notice period** — numeric; same edge cases as probation
+
+**Read-only fields are NOT bugs** — wizard-set values (salary, employment type, candidate
+details) are expected to be locked on this page. Note them as "read-only as expected" and
+move on immediately.
 
 ## Tab Navigation
 

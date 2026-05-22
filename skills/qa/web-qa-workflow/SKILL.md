@@ -68,7 +68,10 @@ agent-browser snapshot -i
 
 - CSS class `disabled` on an element — this is styling only, not a real disabled state. Test by actually clicking or interacting with it.
 - Missing elements in the snapshot — custom components (Svelte, Vaadin) often render incompletely in the accessibility tree. Use `eval` or `screenshot` to verify.
-- Empty snapshot — the page may still be loading. Use `wait --load networkidle` and re-snapshot.
+- Empty snapshot — do NOT conclude the page is blank. Some SPAs render outside the
+  accessibility tree. Run `browser_console: document.body.innerText.substring(0, 500)`
+  to check for real content, then use `browser_vision` to see it visually. Only if both
+  return nothing is the page genuinely empty.
 
 **To confirm a bug is real:**
 1. Take a `screenshot` and use `browser_vision` to see it as a user would
