@@ -23,6 +23,10 @@ Before starting, load all of these:
 **To get here:** complete the `hire-worker-wizard` skill first. The URL is:
 `/organisations/<org-uuid>/contract-quote/<contract-uuid>`
 
+**If the wizard fails to redirect** (e.g. gets stuck on the step navigator with no error),
+do not stop — use the known good contract URL from your `site-config` skill and continue
+testing from there. Note in your report that the wizard redirect failed.
+
 ## Page Structure
 
 The page has 5 tabs across the top:

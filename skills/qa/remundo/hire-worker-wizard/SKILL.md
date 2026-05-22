@@ -82,6 +82,7 @@ If the button appears to click but nothing changes, the form has unfilled requir
 - Annual Salary: type `65000` (⚠️ minimum is GBP 60,000 — use 65000 to be safe; values at or below 60000 silently keep Done disabled with no error shown)
 - Done button aria-label is `"Done"` even though its label reads "Generate Quote"
 - After dispatching Done: **wait 3-5 seconds** for a loading state, then re-snapshot. The page will redirect to `/contract-quote/<uuid>`. Do not click again — just wait and snapshot.
+- **If the page stays on the wizard step navigator** with no redirect after 10 seconds: check the browser console. A `401` response on `/eorinstances/<uuid>` means the session token expired mid-wizard — this is a known issue. Log it as a bug, then use the fallback contract URL from `site-config` to continue.
 
 ## Main Terms Page (`/contract-quote/<uuid>`)
 
