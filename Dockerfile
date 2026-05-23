@@ -117,6 +117,9 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 RUN ln -sf /opt/hermes/.venv/bin/hermes /opt/hermes/.venv/bin/argus && \
     ln -sf /opt/hermes/.venv/bin/argus /usr/local/bin/argus
 
+# ---------- argus-test wrapper ----------
+COPY --chmod=0755 scripts/argus-test.sh /usr/local/bin/argus-test
+
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
