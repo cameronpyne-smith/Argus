@@ -59,6 +59,22 @@ source /opt/hermes/.venv/bin/activate
 MODEL_LABEL="${PROVIDER_FLAGS:+qwen3.5:35b (local)}"
 MODEL_LABEL="${MODEL_LABEL:-gpt-4.1 (openai)}"
 
+# If --local, verify Ollama is reachable before wasting turns
+if [[ -n "$PROVIDER_FLAGS" ]]; then
+  echo "▶ Checking Ollama connectivity at localhost:11434..."
+  if ! curl -sf --max-time 3 http://localhost:11434/api/tags > /dev/null 2>&1; then
+    echo ""
+    echo "✗ Ollama is not reachable. Start it with:"
+    echo ""
+    echo "    OLLAMA_HOST=0.0.0.0 ollama serve &"
+    echo ""
+    echo "  Then re-run: argus-test ${SKILL} --local"
+    exit 1
+  fi
+  echo "  ✓ Ollama is up"
+  echo ""
+fi
+
 echo "▶ Step 1: Loading skill '$SKILL' and navigating to page... [$MODEL_LABEL]"
 # shellcheck disable=SC2086
 argus chat -q "Read your ${SKILL} skill and follow it." $PROVIDER_FLAGS
