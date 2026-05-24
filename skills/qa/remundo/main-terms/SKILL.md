@@ -34,6 +34,13 @@ write one report. Do not narrate what you are about to do — just do it.
 
 ## Getting to the Main Terms Page
 
+**Login is ONLY done with the single dispatchEvent call from `site-config`.** Do not use
+`browser_type`, `browser_click`, or `browser_press Enter` to log in — they silently fail
+on this Svelte app every time. The site-config skill has the exact 2-step sequence:
+`browser_navigate` then one `browser_console` call. After that, wait 5s, snapshot, confirm
+URL contains `/dashboard`. If still on login, run the browser_console step once more.
+**Never try any other login method.**
+
 **Do not run the wizard** — navigate directly to the known good contract URL from
 `site-config`. The wizard has a known 401 bug that wastes turns. Use the fallback URL
 immediately after login.
