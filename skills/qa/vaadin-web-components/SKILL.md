@@ -7,6 +7,64 @@ summary: Patterns for interacting with Vaadin comboboxes, which behave different
 
 # Vaadin Web Component Testing
 
+## Critical: Vaadin Uses Shadow DOM
+
+Vaadin components render their actual `<input>` elements inside a **Shadow DOM**. A plain
+`browser_click` or `.click()` on the outer `vaadin-text-field` element hits the host element,
+not the input inside. The reactive system does not fire. **You must go into the Shadow DOM.**
+
+### Universal Pattern — Edit Any Vaadin Text Field
+
+```javascript
+(function(selector, newValue) {
+  const host = document.querySelector(selector);
+  if (!host) return 'NOT FOUND: ' + selector;
+  const input = host.shadowRoot && host.shadowRoot.querySelector('input');
+  if (!input) return 'NO INPUT IN SHADOW: ' + selector;
+  input.focus();
+  input.select();
+  // Dispatch native input events the framework is listening to
+  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype, 'value').set;
+  nativeInputValueSetter.call(input, newValue);
+  input.dispatchEvent(new Event('input', {bubbles: true}));
+  input.dispatchEvent(new Event('change', {bubbles: true}));
+  input.dispatchEvent(new Event('blur',  {bubbles: true}));
+  return 'SET: ' + input.value;
+})('vaadin-text-field#my-field-id', 'new value here');
+```
+
+Replace `vaadin-text-field#my-field-id` with the actual selector.
+Use `vaadin-integer-field`, `vaadin-number-field`, `vaadin-text-area` as needed.
+Confirm by checking `input.value` in the return value.
+
+### Find Available Fields First
+
+Before interacting, enumerate what's actually on the page:
+
+```javascript
+[...document.querySelectorAll(
+  'vaadin-text-field, vaadin-integer-field, vaadin-number-field, vaadin-text-area, vaadin-combo-box, vaadin-date-picker'
+)].map(el => ({
+  tag: el.tagName.toLowerCase(),
+  id: el.id || '',
+  label: el.getAttribute('label') || el.getAttribute('placeholder') || '',
+  value: el.value || el._value || '',
+  readonly: el.hasAttribute('readonly') || el.readonly || false,
+  disabled: el.hasAttribute('disabled') || el.disabled || false
+}))
+```
+
+### Check If a Field Is Read-Only
+
+```javascript
+const el = document.querySelector('vaadin-text-field#my-id');
+({readonly: el.readonly, disabled: el.disabled, hasReadonlyAttr: el.hasAttribute('readonly')})
+```
+
+Read-only fields are not bugs — wizard-set values (salary, employment type, candidate info)
+are intentionally locked.
+
 ## Comboboxes (vaadin-combo-box)
 
 Vaadin comboboxes are custom elements — they do not behave like `<select>`. You cannot set

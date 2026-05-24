@@ -112,6 +112,38 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Apply Argus QA config overrides — always enforced so rebuilds don't lose them.
+# Uses Python + ruamel.yaml-style safe sed to patch the live config.yaml in-place.
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+    python3 - <<'PYEOF'
+import os, re
+
+config_path = os.environ.get("HERMES_HOME", "/opt/data") + "/config.yaml"
+with open(config_path) as f:
+    content = f.read()
+
+# Patch agent.reasoning_effort to 'none' (disables Qwen thinking mode)
+content = re.sub(r'^(\s+reasoning_effort:\s*).*$', r'\g<1>none', content, flags=re.MULTILINE)
+
+# Patch agent.tool_use_enforcement to true (prevents model narration)
+content = re.sub(r'^(\s+tool_use_enforcement:\s*).*$', r'\g<1>true', content, flags=re.MULTILINE)
+
+# Patch model.ollama_num_ctx to 8192 (caps KV cache for fast local inference)
+if 'ollama_num_ctx:' in content:
+    content = re.sub(r'^(\s+ollama_num_ctx:\s*).*$', r'\g<1>8192', content, flags=re.MULTILINE)
+else:
+    # Insert after 'model:' section's api_mode line if not present
+    content = re.sub(
+        r'^(model:\n(?:.*\n)*?  api_mode:.*\n)',
+        r'\g<1>  ollama_num_ctx: 8192\n',
+        content, flags=re.MULTILINE
+    )
+
+with open(config_path, "w") as f:
+    f.write(content)
+PYEOF
+fi
+
 # Optionally start `hermes dashboard` as a side-process.
 #
 # Toggled by HERMES_DASHBOARD=1 (also accepts "true"/"yes", case-insensitive).

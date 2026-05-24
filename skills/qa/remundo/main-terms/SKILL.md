@@ -24,9 +24,11 @@ Before starting, load all of these:
 Work through every field and tab making tool calls. When the full pass is complete,
 write one report. Do not narrate what you are about to do — just do it.
 
-- No acknowledgement messages ("I will now...", "Proceeding...", "Continuing...")
-- No mid-test summaries or check-ins
-- If a field won't respond after 2 attempts, note it as "uneditable" and move on
+- **FORBIDDEN: any text response before the final report** — no "Let me...", "I will...",
+  "Now I...", "Let me try...", "Let me check...", "Let me snap..." or any other narration
+- If you have a thought, act on it with a tool call — do not write it out
+- No acknowledgement messages, no mid-test summaries, no check-ins
+- If a field won't respond after 2 attempts, note it internally and move on immediately
 - Do NOT use `browser_vision` for initial field discovery — use `browser_console`
   with `document.querySelectorAll` to enumerate inputs programmatically
 
@@ -137,11 +139,42 @@ Click each tab and verify:
 **Terms Validation tab:** this tab may show validation errors for the current contract
 state. A page that is entirely empty here is suspicious — check console for errors.
 
-## Vaadin Comboboxes on This Page
+## Known Working Patterns for This Page
 
-Currency and potentially other fields use Vaadin comboboxes. Use the
-`vaadin-web-components` skill pattern: type to filter → snapshot to confirm dropdown →
-dispatchEvent click item → wait for save notification.
+### Editing a Vaadin text/number field
+
+DO NOT call `.click()` on the outer vaadin element — it hits the shadow host, not the
+input. Use Shadow DOM access:
+
+```javascript
+(function(selector, newValue) {
+  const host = document.querySelector(selector);
+  if (!host) return 'NOT FOUND';
+  const input = host.shadowRoot.querySelector('input');
+  if (!input) return 'NO INPUT';
+  input.focus(); input.select();
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  setter.call(input, newValue);
+  input.dispatchEvent(new Event('input',  {bubbles: true}));
+  input.dispatchEvent(new Event('change', {bubbles: true}));
+  input.dispatchEvent(new Event('blur',   {bubbles: true}));
+  return 'SET: ' + input.value;
+})('vaadin-text-field#field-id', 'new value');
+```
+
+### Finding the right selector
+
+```javascript
+[...document.querySelectorAll('vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,vaadin-combo-box,vaadin-date-picker')]
+  .map(el => ({tag: el.tagName, id: el.id, label: el.getAttribute('label')||'', value: el.value||'', readonly: el.readonly||false}))
+```
+
+Use the `id` from this output in the Shadow DOM setter above.
+
+### Vaadin Comboboxes on This Page
+
+Currency and potentially other fields use Vaadin comboboxes. After typing to filter,
+click the item via dispatchEvent (see `vaadin-web-components` skill):
 
 ## Svelte Buttons
 
