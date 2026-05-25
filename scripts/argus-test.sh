@@ -93,43 +93,51 @@ Never use browser_click or browser_type to log in." $PROVIDER_FLAGS
 
 echo ""
 echo "▶ Step 2: Running full test pass (max turns: ${MAX_TURNS})..."
-# Step 2 embeds login JS, contract URL, shadow pierce JS, and explicit field interaction steps.
+# Step 2 resumes the browser session from step 1. The browser is already on the contract page.
+# Key insight: browser_click works on accordion section headers (via snapshot full refs) but NOT
+# on field-edit rows (pencil icons) — those require dispatchEvent.
 # shellcheck disable=SC2086
-argus chat -c -q "You are testing the ${SKILL} page at: ${CONTRACT_URL}
+argus chat -c -q "TESTING TASK: QA test of ${SKILL} page.
 
-STEP A — Get on the right page:
-1. Navigate to: ${CONTRACT_URL}
-2. Wait 5 seconds (sleep 5) for the SPA to hydrate
-3. Run: window.location.href — confirm it contains 'contract-quote'. If it shows 'login', you were redirected.
-4. If redirected to login, run this browser_console EXACTLY:
-${LOGIN_JS}
-   Then sleep 5, then navigate back to the contract URL, then sleep 3 more seconds.
-5. Verify with: document.body.innerText — it should contain 'Main Terms' and field names.
-   IMPORTANT: browser_snapshot will only show 1 element on this page — that is normal. Do NOT use snapshot element count to judge whether the page loaded. Use innerText instead.
+=== CRITICAL RULES (violations will break the test) ===
+FORBIDDEN: browser_type, browser_fill, browser_vision
+FORBIDDEN: browser_click on any element that opens a form dialog (use dispatchEvent instead)
+ALLOWED:   browser_console, browser_snapshot, browser_click (on accordion headers only), terminal, browser_wait
+CONSOLE NOISE: browser_console returns app log lines (Firebase, Warning, HTTP) before the return value. IGNORE all lines except the last JSON/value returned by your function. Do NOT write a report about console log output.
 
-STEP B — Expand ALL accordion sections using dispatchEvent (NOT browser_click):
-WARNING: Do NOT navigate anywhere. Do NOT use browser_click on this SPA — it silently fires but does NOT trigger Svelte event handlers. Use browser_console with dispatchEvent for ALL interactions.
-Run this browser_console to click every accordion section header:
+=== ACTION 1: Verify page ===
+Run: browser_console: document.body.innerText.substring(0,300)
+Expected: text containing 'Main Terms'. If you see 'login' instead:
+  - Run browser_console: ${LOGIN_JS}
+  - terminal sleep 5
+  - browser_navigate ${CONTRACT_URL}
+  - terminal sleep 3
+  - Run browser_console: document.body.innerText.substring(0,200) to confirm
+STOP. Report what you see.
+
+=== ACTION 2: Expand all accordion sections ===
+Run this EXACT browser_console call (copy it verbatim, do not modify):
 (function(){var names=['Job Details','Main Terms','Candidate','Organization','Billing','Insurance','Allowances','Incentives','Protection'];var clicked=[];names.forEach(function(name){var el=[...document.querySelectorAll('*')].find(function(e){var t=e.textContent.trim();return t.startsWith(name)&&t.length<80&&getComputedStyle(e).cursor==='pointer';});if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));clicked.push(name);}});return JSON.stringify(clicked);})()
 Then: terminal sleep 3
-Then run pierce query to discover all fields via browser_console:
-(function pierce(sel,root,out){out=out||[];try{[...root.querySelectorAll(sel)].forEach(el=>out.push(el));[...root.querySelectorAll('*')].forEach(el=>{if(el.shadowRoot)pierce(sel,el.shadowRoot,out);});}catch(e){}return out;})('vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,vaadin-combo-box,vaadin-date-picker,vaadin-time-picker,vaadin-select,vaadin-checkbox',document).map(el=>({tag:el.tagName.toLowerCase(),id:el.id||'(no id)',label:el.getAttribute('label')||'',value:el.value!==undefined?el.value:el.checked,readonly:el.readonly||false,disabled:el.disabled||false}))
-Report the FULL field list verbatim. If still empty, run: document.querySelectorAll('vaadin-date-picker,vaadin-text-field').length
+Report ONLY the JSON array returned (ignore all other console output).
 
-STEP C — Test every field using dispatchEvent clicks (NOT browser_click):
-RULE: Every click on this SPA must use browser_console dispatchEvent, never browser_click.
-For each field to test: find the clickable row containing the field's label text, dispatch a click, sleep 1, then check for new vaadin overlay/dialog elements.
-Click a field row: browser_console: (function(label){var el=[...document.querySelectorAll('*')].find(function(e){return e.textContent.includes(label)&&getComputedStyle(e).cursor==='pointer'&&e.querySelectorAll('vaadin-icon, img').length>0;});if(el)el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return el?'clicked':'not found';})('START_DATE_OR_FIELD_NAME')
-After click, check for new fields: browser_console: document.querySelectorAll('vaadin-date-picker,vaadin-text-field,vaadin-combo-box,vaadin-select,input[type=text],input[type=date]').length
-- For date-pickers that appeared: set el.value='YYYY-MM-DD' then dispatch value-changed event
-- For text fields that appeared: use nativeInputValueSetter + input/change/blur events
-- Click each tab (Main Terms, Terms Validation, Work Order, Employment Agreement) also via dispatchEvent
-- Click Save & Close via dispatchEvent and observe response
+=== ACTION 3: Discover fields ===
+Run this EXACT browser_console call (copy it verbatim):
+(function pierce(sel,root,out){out=out||[];try{[...root.querySelectorAll(sel)].forEach(el=>out.push(el));[...root.querySelectorAll('*')].forEach(el=>{if(el.shadowRoot)pierce(sel,el.shadowRoot,out);});}catch(e){}return out;})('vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,vaadin-combo-box,vaadin-date-picker,vaadin-time-picker,vaadin-select,vaadin-checkbox',document).map(el=>({tag:el.tagName.toLowerCase(),id:el.id||'',label:el.getAttribute('label')||'',value:String(el.value!==undefined?el.value:''),readonly:el.readonly||false,disabled:el.disabled||false}))
+Report: the FULL JSON array verbatim. If empty array [], run diagnostic: browser_console: document.querySelectorAll('vaadin-date-picker,vaadin-text-field').length and report that number.
 
-STEP D — Write the QA report listing:
-1. Each field tested and what edge cases were tried
-2. Any bugs found (URL, exact steps, expected vs actual, severity: Critical/High/Medium/Low)
-3. Fields that are read-only — note them as expected, not bugs
-4. Any tabs that failed to load
+=== ACTION 4: Test editable fields ===
+For each NON-readonly, NON-disabled field from ACTION 3:
+a) Click its edit row using this pattern (replace FIELD_LABEL with the field's label):
+   browser_console: (function(label){var el=[...document.querySelectorAll('*')].find(function(e){return e.textContent.includes(label)&&getComputedStyle(e).cursor==='pointer'&&e.querySelectorAll('vaadin-icon,img').length>0;});if(el)el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return el?'clicked:'+el.tagName:'not found';})('FIELD_LABEL')
+b) terminal sleep 1
+c) Check what appeared: browser_console: document.querySelectorAll('vaadin-overlay,vaadin-dialog-overlay,[slot=overlay],[role=dialog]').length
+d) If overlay appeared: browser_console: document.querySelector('vaadin-overlay,[role=dialog]').innerText to see the form
+e) Record: field name, whether dialog opened, what inputs were visible
 
-Do NOT report on browser console logs or API health. Only report on direct UI behaviour you observed." --max-turns "$MAX_TURNS" $PROVIDER_FLAGS
+=== ACTION 5: Write QA report ===
+List ONLY findings from direct UI interaction (NOT console log analysis):
+1. Fields tested: name, editable/readonly, dialog opened Y/N
+2. Bugs found: URL, exact steps to reproduce, expected vs actual, severity Critical/High/Medium/Low
+3. Fields confirmed read-only: list as expected behaviour
+4. Skipped fields: why skipped" --max-turns "$MAX_TURNS" $PROVIDER_FLAGS
