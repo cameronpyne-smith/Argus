@@ -111,49 +111,49 @@ FIELD 1: Start Date
   Turn 1: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Start Date'||t.startsWith('Start Date ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Start Date';})()
   Turn 2: terminal sleep 2
   Turn 2b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Start Date | [click result] | [inputs JSON]" 
+  Record: "Start Date | CLICK_RESULT | INPUTS_JSON" 
 
 FIELD 2: Annual Salary
   Turn 3: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Annual Salary'||t.startsWith('Annual Salary ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Annual Salary';})()
   Turn 4: terminal sleep 2
   Turn 4b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Annual Salary | [click result] | [inputs JSON]" 
+  Record: "Annual Salary | CLICK_RESULT | INPUTS_JSON" 
 
 FIELD 3: Notice Period
   Turn 5: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Notice Period'||t.startsWith('Notice Period ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Notice Period';})()
   Turn 6: terminal sleep 2
   Turn 6b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Notice Period | [click result] | [inputs JSON]" 
+  Record: "Notice Period | CLICK_RESULT | INPUTS_JSON" 
 
 FIELD 4: Probation Period
   Turn 7: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Probation Period'||t.startsWith('Probation Period ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Probation Period';})()
   Turn 8: terminal sleep 2
   Turn 8b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Probation Period | [click result] | [inputs JSON]" 
+  Record: "Probation Period | CLICK_RESULT | INPUTS_JSON" 
 
 FIELD 5: Nationality
   Turn 9: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Nationality'||t.startsWith('Nationality ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Nationality';})()
   Turn 10: terminal sleep 2
   Turn 10b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Nationality | [click result] | [inputs JSON]" 
+  Record: "Nationality | CLICK_RESULT | INPUTS_JSON" 
 
 FIELD 6: Job Location
   Turn 11: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Job Location'||t.startsWith('Job Location ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Job Location';})()
   Turn 12: terminal sleep 2
   Turn 12b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Job Location | [click result] | [inputs JSON]" 
+  Record: "Job Location | CLICK_RESULT | INPUTS_JSON" 
 
 FIELD 7: Work Schedule
   Turn 13: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Work Schedule'||t.startsWith('Work Schedule ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Work Schedule';})()
   Turn 14: terminal sleep 2
   Turn 14b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Work Schedule | [click result] | [inputs JSON]" 
+  Record: "Work Schedule | CLICK_RESULT | INPUTS_JSON" 
 
 FIELD 8: Holidays
   Turn 15: browser_console: (function(){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t==='Holidays'||t.startsWith('Holidays ');}).pop();var row=el;for(var i=0;i<6&&row;i++){if(row.querySelector('vaadin-icon')){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked:'+row.tagName+':'+row.textContent.trim().substring(0,30);}row=row.parentElement;}return 'not found:Holidays';})()
   Turn 16: terminal sleep 2
   Turn 16b: browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
-  Record: "Holidays | [click result] | [inputs JSON]" 
+  Record: "Holidays | CLICK_RESULT | INPUTS_JSON" 
 
 STEP 3: Write QA report as a table:
 | Field | Click Result | Inputs Found | Status |
