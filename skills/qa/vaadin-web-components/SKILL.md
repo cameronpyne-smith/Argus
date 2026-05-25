@@ -9,9 +9,27 @@ summary: Browser automation patterns for Vaadin text fields, date-pickers, combo
 
 ## The Golden Rule
 
-**Never use `browser_click` or `browser_type` directly on a Vaadin host element.**  
-Vaadin components render their real inputs inside a Shadow DOM. A plain click hits the host,
-not the input — the reactive framework never fires and nothing changes.
+**Never use `browser_click` or `browser_type` directly on this SPA.**  
+Playwright's `browser_click @ref` sends a CDP-level synthetic click that does **not** trigger Svelte `on:click` event handlers. The click silently fires but nothing happens.
+
+**Always use `browser_console` with `dispatchEvent` for every click interaction:**
+```javascript
+element.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}))
+```
+
+To click an element by its visible label text:
+```javascript
+// Find the clickable row for a field (e.g., "Start Date") and click it
+(function(label) {
+  var el = [...document.querySelectorAll('*')].find(function(e) {
+    return e.textContent.includes(label) &&
+           getComputedStyle(e).cursor === 'pointer' &&
+           e.querySelectorAll('vaadin-icon, img').length > 0;
+  });
+  if (el) el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+  return el ? 'clicked' : 'not found';
+})('Start Date')
+```
 
 ## Step 0 — Always Discover Fields First
 

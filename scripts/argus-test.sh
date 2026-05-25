@@ -107,25 +107,24 @@ ${LOGIN_JS}
 5. Verify with: document.body.innerText — it should contain 'Main Terms' and field names.
    IMPORTANT: browser_snapshot will only show 1 element on this page — that is normal. Do NOT use snapshot element count to judge whether the page loaded. Use innerText instead.
 
-STEP B — Expand ALL accordion sections FIRST, then discover fields:
-WARNING: Do NOT navigate to a new URL during STEP B. Stay on the contract page.
-1. Run browser_snapshot full (use 'full' not 'compact') — this returns clickable element refs for all visible items
-2. Identify which refs are section headers (elements whose text matches: Organization/Billing, Candidate, Estimated Monthly Cost, Employment Incentives, Insurance, Allowances, Job Details, Protection Clauses)
-3. For each section header ref found: browser_click @ref, then sleep 1. Do this with browser_click, NOT browser_console.
-4. After clicking all section headers, run browser_snapshot full again to confirm new elements appeared
-5. AFTER expanding all sections, run this pierce query via browser_console:
+STEP B — Expand ALL accordion sections using dispatchEvent (NOT browser_click):
+WARNING: Do NOT navigate anywhere. Do NOT use browser_click on this SPA — it silently fires but does NOT trigger Svelte event handlers. Use browser_console with dispatchEvent for ALL interactions.
+Run this browser_console to click every accordion section header:
+(function(){var names=['Job Details','Main Terms','Candidate','Organization','Billing','Insurance','Allowances','Incentives','Protection'];var clicked=[];names.forEach(function(name){var el=[...document.querySelectorAll('*')].find(function(e){var t=e.textContent.trim();return t.startsWith(name)&&t.length<80&&getComputedStyle(e).cursor==='pointer';});if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));clicked.push(name);}});return JSON.stringify(clicked);})()
+Then: terminal sleep 3
+Then run pierce query to discover all fields via browser_console:
 (function pierce(sel,root,out){out=out||[];try{[...root.querySelectorAll(sel)].forEach(el=>out.push(el));[...root.querySelectorAll('*')].forEach(el=>{if(el.shadowRoot)pierce(sel,el.shadowRoot,out);});}catch(e){}return out;})('vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,vaadin-combo-box,vaadin-date-picker,vaadin-time-picker,vaadin-select,vaadin-checkbox',document).map(el=>({tag:el.tagName.toLowerCase(),id:el.id||'(no id)',label:el.getAttribute('label')||'',value:el.value!==undefined?el.value:el.checked,readonly:el.readonly||false,disabled:el.disabled||false}))
-6. Report the FULL list of fields found verbatim. If still empty, run browser_console: document.querySelectorAll('vaadin-date-picker,vaadin-text-field').length to confirm.
-NOTE: Fields are ONLY visible in the DOM after their accordion section is expanded. Running pierce before expanding will return []. Use browser_click @ref on section headers, NOT JS.
-After interacting with any field, check for overlays: [...document.querySelectorAll('vaadin-date-picker-overlay,vaadin-dialog-overlay,vaadin-overlay')].map(el=>({tag:el.tagName.toLowerCase(),opened:el.opened||!el.hidden}))
+Report the FULL field list verbatim. If still empty, run: document.querySelectorAll('vaadin-date-picker,vaadin-text-field').length
 
-STEP C — Test every field found in STEP B:
-- For each non-readonly field: test valid input, empty, boundary values, special chars
-- For date-pickers: set el.value = 'YYYY-MM-DD' via browser_console, dispatch value-changed
-- For text fields: use nativeInputValueSetter + input/change/blur events via browser_console
-- For combo-boxes: set el.opened=true, then click the matching vaadin-combo-box-item
-- Click each tab (Main Terms, Terms Validation, Work Order, Employment Agreement) and verify it loads
-- Click Save & Close and observe what happens
+STEP C — Test every field using dispatchEvent clicks (NOT browser_click):
+RULE: Every click on this SPA must use browser_console dispatchEvent, never browser_click.
+For each field to test: find the clickable row containing the field's label text, dispatch a click, sleep 1, then check for new vaadin overlay/dialog elements.
+Click a field row: browser_console: (function(label){var el=[...document.querySelectorAll('*')].find(function(e){return e.textContent.includes(label)&&getComputedStyle(e).cursor==='pointer'&&e.querySelectorAll('vaadin-icon, img').length>0;});if(el)el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return el?'clicked':'not found';})('START_DATE_OR_FIELD_NAME')
+After click, check for new fields: browser_console: document.querySelectorAll('vaadin-date-picker,vaadin-text-field,vaadin-combo-box,vaadin-select,input[type=text],input[type=date]').length
+- For date-pickers that appeared: set el.value='YYYY-MM-DD' then dispatch value-changed event
+- For text fields that appeared: use nativeInputValueSetter + input/change/blur events
+- Click each tab (Main Terms, Terms Validation, Work Order, Employment Agreement) also via dispatchEvent
+- Click Save & Close via dispatchEvent and observe response
 
 STEP D — Write the QA report listing:
 1. Each field tested and what edge cases were tried
