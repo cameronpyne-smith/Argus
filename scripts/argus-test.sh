@@ -117,9 +117,9 @@ STOP. Report what you see.
 
 === ACTION 2: Expand all accordion sections ===
 Run this EXACT browser_console call (copy it verbatim, do not modify):
-(function(){var names=['Job Details','Main Terms','Candidate','Organization','Billing','Insurance','Allowances','Incentives','Protection'];var clicked=[];names.forEach(function(name){var el=[...document.querySelectorAll('*')].find(function(e){var t=e.textContent.trim();return t.startsWith(name)&&t.length<80&&getComputedStyle(e).cursor==='pointer';});if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));clicked.push(name);}});return JSON.stringify(clicked);})()
+(function(){var els=document.querySelectorAll('[aria-expanded]');if(els.length>0){var r=[];[...els].forEach(function(e){e.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));r.push(e.textContent.trim().substring(0,25));});return JSON.stringify({method:'aria',clicked:r});}var names=['Job Details','Candidate','Billing','Insurance','Allowances','Incentives','Protection'];var clicked=[];names.forEach(function(name){var el=[...document.querySelectorAll('*')].find(function(e){var t=e.textContent.trim();if(!t.startsWith(name)||t.length>=80)return false;if(getComputedStyle(e).cursor!=='pointer')return false;var p=e;while(p){if(/^(NAV|HEADER|ASIDE|A)$/.test(p.tagName))return false;p=p.parentElement;}return true;});if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));clicked.push(name);}});return JSON.stringify({method:'text',clicked:clicked});})()
 Then: terminal sleep 3
-Report ONLY the JSON array returned (ignore all other console output).
+Report ONLY the JSON returned (ignore all other console output). This uses aria-expanded first, text-match as fallback. Either way, report what was clicked.
 
 === ACTION 3: Discover fields ===
 Run this EXACT browser_console call (copy it verbatim):
