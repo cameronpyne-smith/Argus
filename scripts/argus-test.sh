@@ -98,7 +98,7 @@ echo ""
 echo ""
 echo "▶ Step 2: Running field tests (max turns: ${MAX_TURNS})..."
 # Store prompt in variable via heredoc to avoid bash newline splitting
-read -r -d '' STEP2_PROMPT << 'PROMPT_EOF'
+read -r -d '' STEP2_PROMPT << 'PROMPT_EOF' || true
 TESTING TASK: QA test of the main-terms page.
 
 RULES: No browser_type/browser_fill/browser_vision. Ignore console log noise (Firebase/HTTP lines).
