@@ -105,7 +105,7 @@ RULES: No browser_type/browser_fill/browser_vision. Ignore console log noise (Fi
 
 STEP 1 - Verify page
 browser_console: document.body.innerText.substring(0,200)
-Confirm URL contains contract-quote. If shows login: run browser_console: LOGIN_JS_PLACEHOLDER then sleep 5 then navigate back then sleep 3.
+Confirm URL contains contract-quote. If NOT on contract-quote page, stop and report "Session lost - not on contract page".
 
 STEP 2 - Run these field tests IN EXACT ORDER, 3 steps each:
 
@@ -162,9 +162,6 @@ STEP 3 - Write report:
 |-------|-------------|--------------|
 (one row per field above)
 PROMPT_EOF
-
-# Substitute login JS and provider flags
-STEP2_PROMPT="${STEP2_PROMPT//LOGIN_JS_PLACEHOLDER/${LOGIN_JS}}"
 
 # shellcheck disable=SC2086
 argus chat -c -q "$STEP2_PROMPT" --max-turns "$MAX_TURNS" $PROVIDER_FLAGS
