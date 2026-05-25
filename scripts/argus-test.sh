@@ -92,52 +92,65 @@ argus chat --max-turns 15 -q "Read your ${SKILL} skill. Then do EXACTLY these st
 Never use browser_click or browser_type to log in." $PROVIDER_FLAGS
 
 echo ""
+echo ""
 echo "▶ Step 2: Running full test pass (max turns: ${MAX_TURNS})..."
-# Step 2 resumes the browser session from step 1. The browser is already on the contract page.
-# Key insight: browser_click works on accordion section headers (via snapshot full refs) but NOT
-# on field-edit rows (pencil icons) — those require dispatchEvent.
+# ARCHITECTURE: Vaadin inputs only appear in the DOM when an edit dialog is open.
+# Flow: verify page → read visible field list → click pencil icons → pierce dialog → interact → report
 # shellcheck disable=SC2086
 argus chat -c -q "TESTING TASK: QA test of ${SKILL} page.
 
-=== CRITICAL RULES (violations will break the test) ===
+=== CRITICAL RULES ===
 FORBIDDEN: browser_type, browser_fill, browser_vision
-FORBIDDEN: browser_click on any element that opens a form dialog (use dispatchEvent instead)
-ALLOWED:   browser_console, browser_snapshot, browser_click (on accordion headers only), terminal, browser_wait
-CONSOLE NOISE: browser_console returns app log lines (Firebase, Warning, HTTP) before the return value. IGNORE all lines except the last JSON/value returned by your function. Do NOT write a report about console log output.
+FORBIDDEN: browser_click on edit-dialog elements (dispatchEvent only inside dialogs)
+CONSOLE NOISE: browser_console output includes app log lines (Firebase, Warning, HTTP, Checking) BEFORE your return value. IGNORE those lines. Use ONLY the final JSON/value your function returned.
 
 === ACTION 1: Verify page ===
-Run: browser_console: document.body.innerText.substring(0,300)
-Expected: text containing 'Main Terms'. If you see 'login' instead:
-  - Run browser_console: ${LOGIN_JS}
-  - terminal sleep 5
-  - browser_navigate ${CONTRACT_URL}
-  - terminal sleep 3
-  - Run browser_console: document.body.innerText.substring(0,200) to confirm
-STOP. Report what you see.
+Run: browser_console: document.body.innerText.substring(0,500)
+Expected: text containing 'Main Terms' and field names like 'Start Date', 'Salary'.
+If you see 'login' instead, re-authenticate:
+  browser_console: ${LOGIN_JS}
+  terminal sleep 5
+  browser_navigate ${CONTRACT_URL}
+  terminal sleep 3
+REPORT: the first 500 chars of page text you see.
 
-=== ACTION 2: Expand all accordion sections ===
-Run this EXACT browser_console call (copy it verbatim, do not modify):
-(function(){var els=document.querySelectorAll('[aria-expanded]');if(els.length>0){var r=[];[...els].forEach(function(e){e.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));r.push(e.textContent.trim().substring(0,25));});return JSON.stringify({method:'aria',clicked:r});}var names=['Job Details','Candidate','Billing','Insurance','Allowances','Incentives','Protection'];var clicked=[];names.forEach(function(name){var el=[...document.querySelectorAll('*')].find(function(e){var t=e.textContent.trim();if(!t.startsWith(name)||t.length>=80)return false;if(getComputedStyle(e).cursor!=='pointer')return false;var p=e;while(p){if(/^(NAV|HEADER|ASIDE|A)$/.test(p.tagName))return false;p=p.parentElement;}return true;});if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));clicked.push(name);}});return JSON.stringify({method:'text',clicked:clicked});})()
-Then: terminal sleep 3
-Report ONLY the JSON returned (ignore all other console output). This uses aria-expanded first, text-match as fallback. Either way, report what was clicked.
+=== ACTION 2: List all visible field names ===
+Run: browser_console: document.body.innerText
+From the output, identify ALL field names that appear on the page (look for label-like text before values: e.g. 'Start Date', 'Salary', 'Notice Period', 'Job Title', etc.)
+REPORT: the complete list of field names visible on the page.
 
-=== ACTION 3: Discover fields ===
-Run this EXACT browser_console call (copy it verbatim):
-(function pierce(sel,root,out){out=out||[];try{[...root.querySelectorAll(sel)].forEach(el=>out.push(el));[...root.querySelectorAll('*')].forEach(el=>{if(el.shadowRoot)pierce(sel,el.shadowRoot,out);});}catch(e){}return out;})('vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,vaadin-combo-box,vaadin-date-picker,vaadin-time-picker,vaadin-select,vaadin-checkbox',document).map(el=>({tag:el.tagName.toLowerCase(),id:el.id||'',label:el.getAttribute('label')||'',value:String(el.value!==undefined?el.value:''),readonly:el.readonly||false,disabled:el.disabled||false}))
-Report: the FULL JSON array verbatim. If empty array [], run diagnostic: browser_console: document.querySelectorAll('vaadin-date-picker,vaadin-text-field').length and report that number.
+=== ACTION 3: Test each field by clicking its pencil/edit icon ===
+NOTE: Vaadin form inputs ONLY appear in the DOM after an edit dialog is opened.
+The pierce query must run AFTER clicking the pencil icon, not before.
 
-=== ACTION 4: Test editable fields ===
-For each NON-readonly, NON-disabled field from ACTION 3:
-a) Click its edit row using this pattern (replace FIELD_LABEL with the field's label):
-   browser_console: (function(label){var el=[...document.querySelectorAll('*')].find(function(e){return e.textContent.includes(label)&&getComputedStyle(e).cursor==='pointer'&&e.querySelectorAll('vaadin-icon,img').length>0;});if(el)el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return el?'clicked:'+el.tagName:'not found';})('FIELD_LABEL')
-b) terminal sleep 1
-c) Check what appeared: browser_console: document.querySelectorAll('vaadin-overlay,vaadin-dialog-overlay,[slot=overlay],[role=dialog]').length
-d) If overlay appeared: browser_console: document.querySelector('vaadin-overlay,[role=dialog]').innerText to see the form
-e) Record: field name, whether dialog opened, what inputs were visible
+For EACH field name from ACTION 2, repeat this sub-sequence:
 
-=== ACTION 5: Write QA report ===
-List ONLY findings from direct UI interaction (NOT console log analysis):
-1. Fields tested: name, editable/readonly, dialog opened Y/N
-2. Bugs found: URL, exact steps to reproduce, expected vs actual, severity Critical/High/Medium/Low
-3. Fields confirmed read-only: list as expected behaviour
-4. Skipped fields: why skipped" --max-turns "$MAX_TURNS" $PROVIDER_FLAGS
+  Step 3a - Click the pencil/edit icon for the field:
+  browser_console: (function(label){var el=[...document.querySelectorAll('*')].filter(function(e){var t=e.textContent.trim();return t===label||t.startsWith(label+' ');})[0];var row=el;for(var i=0;i<5&&row;i++){var icon=row.querySelector('vaadin-icon,svg,[data-icon]');if(icon){row.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return 'clicked row for: '+label;}row=row.parentElement;}return 'pencil not found for: '+label;})('FIELD_LABEL_HERE')
+
+  Step 3b - Wait: terminal sleep 2
+
+  Step 3c - Check for edit dialog inputs (stack-based shadow DOM search):
+  browser_console: (function(){var q=[document],r=[];while(q.length){var n=q.shift();try{n.querySelectorAll('vaadin-text-field,vaadin-date-picker,vaadin-combo-box,vaadin-number-field,vaadin-select,vaadin-text-area,vaadin-integer-field').forEach(function(e){r.push(e.tagName.toLowerCase()+':'+(e.getAttribute('label')||''));});n.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)q.push(e.shadowRoot);});}catch(x){}}return JSON.stringify(r);})()
+
+  Step 3d - REPORT: field name, click result from 3a, inputs found from 3c.
+
+  Step 3e - If inputs were found, interact with the FIRST one:
+    For date-picker: browser_console: (function(){var e=document.querySelector('vaadin-date-picker');if(e){e.value='2099-12-31';e.dispatchEvent(new CustomEvent('value-changed',{detail:{value:'2099-12-31'},bubbles:true}));}return e?'date set to 2099-12-31':'not found';})()
+    For text-field: browser_console: (function(){var e=document.querySelector('vaadin-text-field');var i=e&&e.shadowRoot&&e.shadowRoot.querySelector('input');if(i){Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(i,'TEST');i.dispatchEvent(new Event('input',{bubbles:true}));}return i?'text field set':'not found';})()
+    For combo-box: browser_console: (function(){var e=document.querySelector('vaadin-combo-box');if(e&&e.items&&e.items.length){e.value=e.items[e.items.length-1];e.dispatchEvent(new CustomEvent('value-changed',{bubbles:true}));}return e?'combo set to: '+(e.value||'?'):'not found';})()
+
+  Step 3f - Close the dialog:
+  browser_console: (function(){var b=[...document.querySelectorAll('button,vaadin-button')].find(function(b){var t=b.textContent.trim().toLowerCase();return t==='cancel'||t==='close';});if(b)b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return b?'closed':'no cancel btn - trying Escape';})()
+  If no cancel button: browser_console: document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))
+
+  Step 3g - terminal sleep 1, then repeat for the next field.
+
+Test these fields in priority order: Start Date, End Date, Salary, Notice Period, Job Title, any others visible.
+
+=== ACTION 4: Write QA report ===
+Report ONLY findings from direct UI interaction:
+1. Fields tested: name, dialog opened Y/N, input type found, interaction result
+2. Bugs: URL, steps to reproduce, expected vs actual, severity Critical/High/Medium/Low
+3. Read-only fields: list as expected behaviour
+4. Skipped fields: why" --max-turns "$MAX_TURNS" $PROVIDER_FLAGS
