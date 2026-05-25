@@ -108,12 +108,15 @@ ${LOGIN_JS}
    IMPORTANT: browser_snapshot will only show 1 element on this page — that is normal. Do NOT use snapshot element count to judge whether the page loaded. Use innerText instead.
 
 STEP B — Expand ALL accordion sections FIRST, then discover fields:
-1. Use browser_snapshot to see all clickable section headers on the page
-2. browser_click each section header (e.g. Job Details, Main Terms, etc.) to expand it, then sleep 1 after each
-3. AFTER expanding all sections, run this pierce query via browser_console:
+WARNING: Do NOT navigate to a new URL during STEP B. Stay on the contract page.
+1. Run browser_snapshot full (use 'full' not 'compact') — this returns clickable element refs for all visible items
+2. Identify which refs are section headers (elements whose text matches: Organization/Billing, Candidate, Estimated Monthly Cost, Employment Incentives, Insurance, Allowances, Job Details, Protection Clauses)
+3. For each section header ref found: browser_click @ref, then sleep 1. Do this with browser_click, NOT browser_console.
+4. After clicking all section headers, run browser_snapshot full again to confirm new elements appeared
+5. AFTER expanding all sections, run this pierce query via browser_console:
 (function pierce(sel,root,out){out=out||[];try{[...root.querySelectorAll(sel)].forEach(el=>out.push(el));[...root.querySelectorAll('*')].forEach(el=>{if(el.shadowRoot)pierce(sel,el.shadowRoot,out);});}catch(e){}return out;})('vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,vaadin-combo-box,vaadin-date-picker,vaadin-time-picker,vaadin-select,vaadin-checkbox',document).map(el=>({tag:el.tagName.toLowerCase(),id:el.id||'(no id)',label:el.getAttribute('label')||'',value:el.value!==undefined?el.value:el.checked,readonly:el.readonly||false,disabled:el.disabled||false}))
-4. Report the FULL list of fields found verbatim.
-NOTE: Fields are ONLY visible in the DOM after their accordion section is expanded. Running pierce before expanding will return [].
+6. Report the FULL list of fields found verbatim. If still empty, run browser_console: document.querySelectorAll('vaadin-date-picker,vaadin-text-field').length to confirm.
+NOTE: Fields are ONLY visible in the DOM after their accordion section is expanded. Running pierce before expanding will return []. Use browser_click @ref on section headers, NOT JS.
 After interacting with any field, check for overlays: [...document.querySelectorAll('vaadin-date-picker-overlay,vaadin-dialog-overlay,vaadin-overlay')].map(el=>({tag:el.tagName.toLowerCase(),opened:el.opened||!el.hidden}))
 
 STEP C — Test every field found in STEP B:
