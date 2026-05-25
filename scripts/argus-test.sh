@@ -93,26 +93,37 @@ Never use browser_click or browser_type to log in." $PROVIDER_FLAGS
 
 echo ""
 echo "▶ Step 2: Running full test pass (max turns: ${MAX_TURNS})..."
-# Step 2 embeds login JS and contract URL so it can recover from auth loss without looping.
+# Step 2 embeds login JS, contract URL, shadow pierce JS, and explicit field interaction steps.
 # shellcheck disable=SC2086
 argus chat -c -q "You are testing the ${SKILL} page at: ${CONTRACT_URL}
 
-If you are not already on that page, navigate there now. If redirected to login, use ONLY this browser_console call to log in (never use browser_type or browser_click):
+STEP A — Get on the right page:
+1. Navigate to: ${CONTRACT_URL}
+2. Wait 5 seconds (sleep 5) for the SPA to hydrate
+3. Run: window.location.href — confirm it contains 'contract-quote'. If it shows 'login', you were redirected.
+4. If redirected to login, run this browser_console EXACTLY:
 ${LOGIN_JS}
-Then sleep 5 and navigate back to the contract URL.
+   Then sleep 5, then navigate back to the contract URL, then sleep 3 more seconds.
+5. Verify with: document.body.innerText — it should contain 'Main Terms' and field names.
+   IMPORTANT: browser_snapshot will only show 1 element on this page — that is normal. Do NOT use snapshot element count to judge whether the page loaded. Use innerText instead.
 
-Once on the page — DO NOT navigate away for any reason. Stay on this URL for the entire test.
+STEP B — Discover all fields (run this browser_console BEFORE touching anything):
+(function pierce(sel,root,out){out=out||[];try{[...root.querySelectorAll(sel)].forEach(el=>out.push(el));[...root.querySelectorAll('*')].forEach(el=>{if(el.shadowRoot)pierce(sel,el.shadowRoot,out);});}catch(e){}return out;})('vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,vaadin-combo-box,vaadin-date-picker,vaadin-time-picker,vaadin-select,vaadin-checkbox',document).map(el=>({tag:el.tagName.toLowerCase(),id:el.id||'(no id)',label:el.getAttribute('label')||'',value:el.value!==undefined?el.value:el.checked,readonly:el.readonly||false,disabled:el.disabled||false}))
+If the result is empty, expand each accordion section first (browser_click on the section headers) then re-run the query. Fields only render after their section is opened.
+After clicking any field to open an edit overlay, also check for overlays: [...document.querySelectorAll('vaadin-date-picker-overlay,vaadin-dialog-overlay,vaadin-overlay')].map(el=>({tag:el.tagName.toLowerCase(),opened:el.opened||!el.hidden}))
 
-Execute the FULL test pass described in the ${SKILL} skill:
-- Use the Shadow DOM pattern from the skill to interact with vaadin fields
-- Test every editable field: valid input, boundary values, empty, oversized, special chars
-- Test each tab: click it, verify content loads, check for console errors
-- Test Save & Close button
+STEP C — Test every field found in STEP B:
+- For each non-readonly field: test valid input, empty, boundary values, special chars
+- For date-pickers: set el.value = 'YYYY-MM-DD' via browser_console, dispatch value-changed
+- For text fields: use nativeInputValueSetter + input/change/blur events via browser_console
+- For combo-boxes: set el.opened=true, then click the matching vaadin-combo-box-item
+- Click each tab (Main Terms, Terms Validation, Work Order, Employment Agreement) and verify it loads
+- Click Save & Close and observe what happens
 
-Your QA report must list:
+STEP D — Write the QA report listing:
 1. Each field tested and what edge cases were tried
-2. Any bugs found (URL, steps, expected vs actual, severity)
-3. Fields that are read-only (not bugs — just note them)
+2. Any bugs found (URL, exact steps, expected vs actual, severity: Critical/High/Medium/Low)
+3. Fields that are read-only — note them as expected, not bugs
 4. Any tabs that failed to load
 
-Do NOT report on browser console logs or API health — only report on UI behaviour you directly observed." --max-turns "$MAX_TURNS" $PROVIDER_FLAGS
+Do NOT report on browser console logs or API health. Only report on direct UI behaviour you observed." --max-turns "$MAX_TURNS" $PROVIDER_FLAGS

@@ -15,14 +15,27 @@ not the input — the reactive framework never fires and nothing changes.
 
 ## Step 0 — Always Discover Fields First
 
-Before touching anything, run this to see every Vaadin field on the page:
+> **Critical:** On most Remundo pages, Vaadin fields are rendered inside custom element
+> shadow roots. A plain `document.querySelectorAll('vaadin-*')` will return an empty
+> array or only find the header org-dropdown. You **must** use the recursive pierce below.
 
 ```javascript
-[...document.querySelectorAll(
-  'vaadin-text-field, vaadin-integer-field, vaadin-number-field, vaadin-text-area,' +
-  'vaadin-combo-box, vaadin-date-picker, vaadin-time-picker, vaadin-date-time-picker,' +
-  'vaadin-select, vaadin-checkbox, vaadin-radio-button'
-)].map(el => ({
+// Recursively pierce all shadow roots to find every Vaadin field on the page
+(function pierce(selector, root, out) {
+  out = out || [];
+  try {
+    [...root.querySelectorAll(selector)].forEach(el => out.push(el));
+    [...root.querySelectorAll('*')].forEach(el => {
+      if (el.shadowRoot) pierce(selector, el.shadowRoot, out);
+    });
+  } catch(e) {}
+  return out;
+})(
+  'vaadin-text-field,vaadin-integer-field,vaadin-number-field,vaadin-text-area,' +
+  'vaadin-combo-box,vaadin-date-picker,vaadin-time-picker,vaadin-date-time-picker,' +
+  'vaadin-select,vaadin-checkbox,vaadin-radio-button',
+  document
+).map(el => ({
   tag: el.tagName.toLowerCase(),
   id: el.id || '(no id)',
   label: el.getAttribute('label') || el.getAttribute('placeholder') || '',
@@ -33,30 +46,54 @@ Before touching anything, run this to see every Vaadin field on the page:
 ```
 
 Use the `id` from this output as the selector in all patterns below.
+If the list is empty, the section may not have rendered yet — expand it first (browser_click the accordion header) then re-run the query.
 Read-only or disabled fields are **not bugs** — note them and move on.
+
+## Warning: browser_snapshot Shows Only 1 Element on This Page
+
+Remundo pages render content inside nested shadow DOMs. `browser_snapshot` will
+typically show only a single element (e.g. `"Open Remundo AI Assistant"`).
+**Do not use snapshot element count to verify the page has loaded.**
+
+Instead, verify page load by checking `document.body.innerText` — it will contain
+the full text content even when the accessibility tree is sparse.
+
+Also wait 3+ seconds after any `browser_navigate` before querying the DOM —
+the Svelte SPA renders the shell first, then hydrates shadow components.
 
 ---
 
 ## Text Fields (vaadin-text-field, vaadin-integer-field, vaadin-number-field, vaadin-text-area)
 
-Uses the Shadow DOM `nativeInputValueSetter` pattern:
+Uses the Shadow DOM `nativeInputValueSetter` pattern. Because fields are inside nested
+shadow roots, use `id` from the Step 0 discovery to target precisely:
 
 ```javascript
-(function(selector, newValue) {
-  const host = document.querySelector(selector);
-  if (!host) return 'NOT FOUND: ' + selector;
+(function(fieldId, newValue) {
+  // Pierce all shadow roots to find the field by id
+  function pierce(sel, root, out) {
+    out = out || [];
+    try {
+      [...root.querySelectorAll(sel)].forEach(el => out.push(el));
+      [...root.querySelectorAll('*')].forEach(el => { if (el.shadowRoot) pierce(sel, el.shadowRoot, out); });
+    } catch(e) {}
+    return out;
+  }
+  const host = pierce('#' + fieldId, document)[0];
+  if (!host) return 'NOT FOUND: #' + fieldId;
   if (host.readonly || host.disabled) return 'READONLY/DISABLED';
   const input = host.shadowRoot && host.shadowRoot.querySelector('input, textarea');
-  if (!input) return 'NO INPUT IN SHADOW: ' + selector;
+  if (!input) return 'NO INPUT IN SHADOW';
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
   setter.call(input, newValue);
   input.dispatchEvent(new Event('input',  {bubbles: true}));
   input.dispatchEvent(new Event('change', {bubbles: true}));
   input.dispatchEvent(new Event('blur',   {bubbles: true}));
   return 'SET: ' + input.value;
-})('vaadin-text-field#field-id', 'new value');
+})('your-field-id', 'new value');
 ```
 
+Replace `'your-field-id'` with the `id` from the Step 0 discovery output.
 Confirm the return says `SET: new value`. If it returns `READONLY/DISABLED`, note the field and skip.
 
 ---
@@ -69,14 +106,36 @@ Date-pickers use a component-level `value` property (ISO format `YYYY-MM-DD`).
 ```javascript
 (function(selector, isoDate) {
   // isoDate must be YYYY-MM-DD, e.g. '2026-06-15'
-  const el = document.querySelector(selector);
+  // Use the recursive pierce from Step 0 to find the selector first
+  function pierce(sel, root, out) {
+    out = out || [];
+    try {
+      [...root.querySelectorAll(sel)].forEach(el => out.push(el));
+      [...root.querySelectorAll('*')].forEach(el => { if (el.shadowRoot) pierce(sel, el.shadowRoot, out); });
+    } catch(e) {}
+    return out;
+  }
+  const results = pierce(selector, document);
+  const el = results[0];
   if (!el) return 'NOT FOUND: ' + selector;
   if (el.readonly || el.disabled) return 'READONLY/DISABLED';
   el.value = isoDate;
   el.dispatchEvent(new CustomEvent('change', {bubbles: true}));
   el.dispatchEvent(new CustomEvent('value-changed', {bubbles: true, detail: {value: isoDate}}));
   return 'SET: ' + el.value;
-})('vaadin-date-picker#field-id', '2026-06-15');
+})('vaadin-date-picker', '2026-06-15');
+```
+
+If the element has an `id`, use `'vaadin-date-picker#field-id'` as the selector.
+
+**After clicking a field to open it, check for the overlay:**
+
+```javascript
+// Did a date-picker or dialog overlay appear after clicking?
+[...document.querySelectorAll(
+  'vaadin-date-picker-overlay, vaadin-date-picker-overlay-content, ' +
+  'vaadin-dialog-overlay, vaadin-overlay'
+)].map(el => ({tag: el.tagName.toLowerCase(), opened: el.opened || !el.hidden}))
 ```
 
 **Edge cases to test:**
