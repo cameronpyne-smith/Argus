@@ -1,115 +1,64 @@
 ---
 name: web-qa-workflow
 title: Web QA Testing Workflow
-description: Systematic approach for QA testing web applications with browser automation
-summary: General workflow and principles for browser-based QA testing — snapshot discipline, retry patterns, bug reporting.
+description: Core principles for autonomous browser-based QA testing.
+summary: How to explore a web app, what counts as a bug, and how to report findings.
 ---
 
 # Web QA Testing Workflow
 
-## Core Principles
+## How to Approach a Page
 
-1. **Snapshot before every interaction.** Refs are ephemeral — they change after every
-   navigation or DOM update. Never reuse a ref from a previous snapshot.
+1. **Explore first.** Take a snapshot or screenshot to understand what the page shows.
+   Read it like a user would — what can you do here, what does it display?
 
-2. **Re-snapshot after every click.** Confirm the outcome before drawing conclusions.
-   A click that produces no change is itself a finding.
+2. **Test like a real user.** Click buttons, fill forms, navigate between sections.
+   If a nav link is broken, that is a bug — don't route around it.
 
-3. **Re-snapshot after receiving a user reply.** Assume all refs are stale when resuming.
-   If the page is blank or you're at login, re-login and navigate back before continuing.
+3. **Try things that should fail.** After confirming the happy path works, try:
+   - Empty required fields
+   - Values that are clearly invalid (negative salary, letters in a number field)
+   - Very long strings (200+ characters)
+   - Special characters: `<script>alert(1)</script>`, `O'Brien`, `£50,000`, `"quoted"`
+   - Boundary values (0, -1, maximum allowed)
 
-4. **Test like a real user.** Use nav links, buttons, and forms as a user would.
-   If a nav link is broken, that IS a bug — don't route around it.
+4. **Re-snapshot after every action.** Confirm what actually happened before drawing conclusions.
 
-5. **Never use visual coordinate clicking (browser_vision).** Always use refs or JS.
+5. **Exhaust alternatives before concluding something is broken.** If one approach fails, try another.
+   A click that does nothing is worth retrying with a different method before reporting it.
 
-6. **Exhaust alternatives before reporting blocked.** If one approach fails, try:
-   - Re-snapshot and retry with fresh ref
-   - JS dispatchEvent instead of browser_click (see `svelte-spa-testing` skill)
-   - Navigating directly by URL as a last resort (but flag if the UI link was broken)
+## What Counts as a Bug
 
-## Clicking Elements
+- A field accepts and saves clearly invalid data (XSS string, negative salary)
+- A save silently fails — no confirmation, no error, data not persisted
+- A required field can be cleared and submitted without validation
+- A page section is blank with no loading indicator and no error message
+- A navigation link does not navigate
+- The browser console shows an unhandled JS error during normal use
+- Submitted value differs from what was entered (silent truncation or transformation)
 
-- **`browser_click <ref>`** — use for nav links, radio buttons, checkboxes, standard buttons
-- **If `browser_click` silently does nothing** — the site may filter synthetic events (e.g. Svelte). Consult `svelte-spa-testing` skill.
-- **If `browser_click` fails with "unknown ref"** — ref is stale, re-snapshot and retry
-- **Fallback for links by text** (only after re-snapshot + retry fails):
-  ```javascript
-  (function(){const link=[...document.querySelectorAll('a')].find(a=>a.textContent.trim().includes('TARGET_TEXT'));link?.click();})();
-  ```
-  If this also fails, report it as a navigation bug.
+## What Is Not a Bug
 
-## Reading a Page
+- Fields that are read-only — some are intentionally locked
+- Async operations that take 2-3 seconds
+- Console warnings (not errors)
+- Slightly slow page loads — wait before concluding something is broken
 
-**Always use `snapshot -i`** (interactive elements only) not plain `snapshot`. Plain snapshot returns structural noise including CSS classes that look meaningful but aren't.
+## How to Verify a Bug is Real
 
-```bash
-agent-browser snapshot -i          # interactive elements only — use this
-agent-browser snapshot -i -u       # also shows href on links
-agent-browser snapshot -i -c       # compact, no empty nodes
-```
+Before reporting, confirm:
+1. You actually attempted the interaction — don't report based on DOM inspection alone
+2. Take a screenshot if possible to show what you saw
+3. Check the browser console for related errors
 
-**Use `screenshot` + `browser_vision` to confirm visual state** before reporting any bug. The accessibility tree can be misleading — CSS class names like `disabled` are styling only, not proof an element is broken. Always confirm visually or by attempting the interaction.
+## Filing a Bug Report
 
-```bash
-agent-browser screenshot /tmp/page.png   # take a screenshot
-# then use browser_vision to analyse what you actually see
-```
+When you find a bug, record:
+- **URL** where the bug occurred
+- **Steps to reproduce** — from login, step by step
+- **Expected behaviour** — what should have happened
+- **Actual behaviour** — what actually happened
+- **Severity**: Critical (blocks core flow) / High (major feature broken) / Medium (partial, workaround exists) / Low (cosmetic)
+- **Console errors** if any
 
-**Wait for the page to settle** before snapshotting after navigation or async actions:
-```bash
-agent-browser wait --load networkidle
-agent-browser snapshot -i
-```
-
-## Verifying Bugs
-
-**Do not report something as a bug based on the accessibility tree alone.** The snapshot reflects DOM structure, not user experience. Common false positives:
-
-- CSS class `disabled` on an element — this is styling only, not a real disabled state. Test by actually clicking or interacting with it.
-- Missing elements in the snapshot — custom components (Svelte, Vaadin) often render incompletely in the accessibility tree. Use `eval` or `screenshot` to verify.
-- Empty snapshot — do NOT conclude the page is blank. Some SPAs render outside the
-  accessibility tree. Run `browser_console: document.body.innerText.substring(0, 500)`
-  to check for real content, then use `browser_vision` to see it visually. Only if both
-  return nothing is the page genuinely empty.
-
-**To confirm a bug is real:**
-1. Take a `screenshot` and use `browser_vision` to see it as a user would
-2. Actually attempt the interaction — does it fail in the way you expect?
-3. Check the browser console for real errors (not just `[warning]` logs)
-
-## Login Flow
-2. Snapshot → find email and password input refs
-3. Type credentials into both fields
-4. Snapshot → confirm submit button is enabled (not disabled)
-5. Submit (use dispatchEvent if the site uses a JS framework like Svelte/React)
-6. Wait and verify you reached an authenticated page (dashboard, home, etc.)
-
-## Testing Navigation
-
-After login, systematically test each section of the app:
-1. Click a nav link using `browser_click <ref>`
-2. Re-snapshot and verify URL changed to the expected route
-3. If URL did not change → **navigation bug** — log it
-4. Explore the section: test forms, buttons, data display
-
-## Handling Async Pages
-
-Some UI updates are asynchronous (loading spinners, generated content):
-- Wait briefly (3-5s) after triggering an async action before snapshotting
-- If a spinner is still showing, wait more before concluding something is broken
-- Distinguish between "slow" and "broken" — retry once before filing a bug
-
-## Filing Issues
-
-When you find a bug:
-1. Capture the exact URL
-2. Write clear reproduction steps (from login, step by step)
-3. State expected vs actual behaviour
-4. Note any console errors (use `browser_console` to check)
-5. Assign severity:
-   - **Critical**: Blocks core user flow (can't login, can't complete a key action)
-   - **High**: Major feature broken or data loss risk
-   - **Medium**: Feature partially works, workaround exists
-   - **Low**: Minor UX issue, cosmetic problem
-6. Run: `gh issue create --title "..." --body "..."`
+At the end of the test session, write all findings in a single report.
