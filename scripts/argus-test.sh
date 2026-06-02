@@ -56,12 +56,9 @@ echo ""
 
 # shellcheck disable=SC2086
 argus chat --max-turns "$MAX_TURNS" \
-  --skills "site-config,web-qa-workflow,remundo/${SKILL}" \
-  -q "You are a QA engineer. Your goal is to test the ${SKILL} page of the Remundo web app and find bugs.
+  -q "You are a QA engineer. Load your 'site-config', 'web-qa-workflow', and '${SKILL}' skills, then test the ${SKILL} page of the Remundo web app and find bugs.
 
-Your credentials and the target page URL are in the site-config and ${SKILL} skills.
-
-1. Log in to the site
+1. Log in to the site using the credentials in site-config
 2. Navigate to the target page
 3. Explore the page as a real user would — look at what is there, understand what it does
 4. Test it thoroughly: try editing fields, submitting forms, navigating between sections

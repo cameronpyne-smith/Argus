@@ -93,6 +93,16 @@ if [ -f "$INSTALL_DIR/agent-config/site-config.md" ]; then
     cp "$INSTALL_DIR/agent-config/site-config.md" "$HERMES_HOME/skills/site-config/SKILL.md"
 fi
 
+# QA skills — copy from skills/qa/ into flat skill directories so Hermes can discover them
+if [ -d "$INSTALL_DIR/skills/qa" ]; then
+    find "$INSTALL_DIR/skills/qa" -name "SKILL.md" | while read -r skill_file; do
+        skill_dir=$(dirname "$skill_file")
+        skill_name=$(basename "$skill_dir")
+        mkdir -p "$HERMES_HOME/skills/$skill_name"
+        cp "$skill_file" "$HERMES_HOME/skills/$skill_name/SKILL.md"
+    done
+fi
+
 # auth.json: bootstrap from env on first boot only.  Used by orchestrators
 # (e.g. provisioning a Hermes VPS from an account-management service) that
 # need to seed the OAuth refresh credential non-interactively, instead of
