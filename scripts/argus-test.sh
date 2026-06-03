@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SKILL=""
-MAX_TURNS=150
+MAX_TURNS=400
 PROVIDER_FLAGS=""
 
 while [[ $# -gt 0 ]]; do
@@ -66,5 +66,6 @@ argus chat --max-turns "$MAX_TURNS" \
 6. Look for anything broken, missing, or behaving unexpectedly
 7. When you are done, write a clear report of every bug you found with: URL, steps to reproduce, expected vs actual behaviour, severity
 
-Do not ask for direction — use your judgement to decide what to test and how." \
+Do not ask for direction — use your judgement to decide what to test and how.
+If you are running low on turns, stop testing and write a partial report with what you have found so far." \
   $PROVIDER_FLAGS
