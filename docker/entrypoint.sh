@@ -138,14 +138,14 @@ content = re.sub(r'^(\s+reasoning_effort:\s*).*$', r'\g<1>none', content, flags=
 # Patch agent.tool_use_enforcement to true (prevents model narration)
 content = re.sub(r'^(\s+tool_use_enforcement:\s*).*$', r'\g<1>true', content, flags=re.MULTILINE)
 
-# Patch model.ollama_num_ctx to 32768 (full context for QA agent prompts)
+# Patch model.ollama_num_ctx to 8192 (enough for QA prompts, keeps inference fast)
 if 'ollama_num_ctx:' in content:
-    content = re.sub(r'^(\s+ollama_num_ctx:\s*).*$', r'\g<1>32768', content, flags=re.MULTILINE)
+    content = re.sub(r'^(\s+ollama_num_ctx:\s*).*$', r'\g<1>8192', content, flags=re.MULTILINE)
 else:
     # Insert after 'model:' section's api_mode line if not present
     content = re.sub(
         r'^(model:\n(?:.*\n)*?  api_mode:.*\n)',
-        r'\g<1>  ollama_num_ctx: 32768\n',
+        r'\g<1>  ollama_num_ctx: 8192\n',
         content, flags=re.MULTILINE
     )
 
