@@ -93,9 +93,12 @@ if [ -f "$INSTALL_DIR/agent-config/site-config.md" ]; then
     cp "$INSTALL_DIR/agent-config/site-config.md" "$HERMES_HOME/skills/site-config/SKILL.md"
 fi
 
-# QA skills — copy from skills/qa/ into flat skill directories so Hermes can discover them
-if [ -d "$INSTALL_DIR/skills/qa" ]; then
-    find "$INSTALL_DIR/skills/qa" -name "SKILL.md" | while read -r skill_file; do
+# QA skills — copy from argus-skills/ into flat skill directories so Hermes can
+# discover them. They live OUTSIDE skills/ on purpose: everything under skills/
+# is treated as "bundled" and re-synced (nested, category-preserving) by both
+# the entrypoint and gateway startup, which would recreate ambiguous duplicates.
+if [ -d "$INSTALL_DIR/argus-skills" ]; then
+    find "$INSTALL_DIR/argus-skills" -name "SKILL.md" | while read -r skill_file; do
         skill_dir=$(dirname "$skill_file")
         skill_name=$(basename "$skill_dir")
         mkdir -p "$HERMES_HOME/skills/$skill_name"
@@ -122,6 +125,17 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Remove the nested qa/ skill tree from the data volume. The QA skills were
+# already flattened into /skills/<name>/ above; leaving the nested copies in
+# place makes skill names ambiguous ("2 skills match") and skill_view refuses
+# to load them — the agent then runs without credentials or methodology.
+rm -rf "$HERMES_HOME/skills/qa"
+
+# Working directories for QA runs: durable bug reports + per-site notes the
+# agent reads/updates across runs so it can vary coverage instead of
+# retreading the same path.
+mkdir -p "$HERMES_HOME/reports" "$HERMES_HOME/qa-notes"
+
 # Apply Argus QA config overrides — always enforced so rebuilds don't lose them.
 # Uses Python + ruamel.yaml-style safe sed to patch the live config.yaml in-place.
 if [ -f "$HERMES_HOME/config.yaml" ]; then
@@ -138,16 +152,33 @@ content = re.sub(r'^(\s+reasoning_effort:\s*).*$', r'\g<1>none', content, flags=
 # Patch agent.tool_use_enforcement to true (prevents model narration)
 content = re.sub(r'^(\s+tool_use_enforcement:\s*).*$', r'\g<1>true', content, flags=re.MULTILINE)
 
-# Patch model.ollama_num_ctx to 8192 (enough for QA prompts, keeps inference fast)
-if 'ollama_num_ctx:' in content:
-    content = re.sub(r'^(\s+ollama_num_ctx:\s*).*$', r'\g<1>8192', content, flags=re.MULTILINE)
-else:
-    # Insert after 'model:' section's api_mode line if not present
-    content = re.sub(
+# Context coherence: Ollama's real window (num_ctx), Hermes' belief about the
+# window (model.context_length) and the compression trigger must agree.
+# Previously num_ctx was 8192 while Hermes believed 262144 and compressed at
+# 64K — Ollama silently truncated every request past ~8K, so the model lost
+# its system prompt/goal/credentials mid-run and the prompt prefix cache
+# never hit (1-2s turns degraded to 100s+).
+# 32768 fits qwen3.5:35b Q4 (23GB) + KV cache on a 32GB GPU.
+def set_or_insert_model_key(content, key, value):
+    if re.search(rf'^\s+{key}:', content, flags=re.MULTILINE):
+        return re.sub(rf'^(\s+{key}:\s*).*$', rf'\g<1>{value}', content, flags=re.MULTILINE)
+    return re.sub(
         r'^(model:\n(?:.*\n)*?  api_mode:.*\n)',
-        r'\g<1>  ollama_num_ctx: 8192\n',
+        rf'\g<1>  {key}: {value}\n',
         content, flags=re.MULTILINE
     )
+
+content = set_or_insert_model_key(content, 'ollama_num_ctx', 32768)
+content = set_or_insert_model_key(content, 'context_length', 32768)
+
+# Compress at 60% of 32K (~19.6K tokens) so requests never reach the real
+# window even with skills + snapshots in flight. Anchor to the compression
+# section — other sections also have *threshold keys.
+content = re.sub(
+    r'(^compression:\n(?:[ \t]+.*\n)*?[ \t]+threshold:[ \t]*)[\d.]+',
+    r'\g<1>0.60',
+    content, flags=re.MULTILINE
+)
 
 with open(config_path, "w") as f:
     f.write(content)

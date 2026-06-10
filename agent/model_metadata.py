@@ -130,7 +130,10 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.
 # Sessions, model switches, and cron jobs should reject models below this.
-MINIMUM_CONTEXT_LENGTH = 64_000
+# Argus fork: lowered from 64_000 so a local Ollama model can run with an
+# honest 32K window (model.context_length matching ollama_num_ctx) instead
+# of advertising 262K and being silently truncated at the server.
+MINIMUM_CONTEXT_LENGTH = 24_000
 
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic

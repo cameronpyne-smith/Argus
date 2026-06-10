@@ -35,7 +35,7 @@ if [[ -z "$SKILL" ]]; then
   echo "Usage: argus-test <skill-name> [--local] [--max-turns N]"
   echo ""
   echo "Available QA skills:"
-  ls /opt/data/skills/qa/remundo/ 2>/dev/null || echo "  (none found)"
+  ls /opt/data/skills/ 2>/dev/null || echo "  (none found)"
   exit 1
 fi
 
@@ -54,18 +54,44 @@ fi
 echo "▶ Running QA test for '$SKILL' (max turns: ${MAX_TURNS})..."
 echo ""
 
+mkdir -p /opt/data/reports /opt/data/qa-notes
+REPORT_FILE="/opt/data/reports/${SKILL}-$(date +%Y%m%d-%H%M).md"
+NOTES_FILE="/opt/data/qa-notes/remundo.md"
+
+# Toolsets are restricted to what a QA run needs: every extra toolset adds
+# tool schemas to the fixed prompt prefix, which costs context and slows
+# every single model call.
 # shellcheck disable=SC2086
 argus chat --max-turns "$MAX_TURNS" \
-  -q "You are a QA engineer. Load your 'site-config', 'web-qa-workflow', and '${SKILL}' skills, then test the ${SKILL} page of the Remundo web app and find bugs.
+  -t browser,skills,file,terminal \
+  -q "You are an autonomous QA engineer testing the ${SKILL} page of the Remundo web app.
 
-1. Log in to the site using the credentials in site-config
+Before you start:
+- Load these skills with skill_view: 'site-config', 'web-qa-workflow', '${SKILL}'
+- Read your notes from previous runs with read_file: ${NOTES_FILE} (may not exist yet)
+
+Rules:
+- Test through the browser UI only, like a real user. Never call the backend API directly, and never use credentials other than the ones in site-config.
+- Do not ask for direction. If something does not work, try a different approach on your own.
+- Vary your testing between runs: prioritise areas, fields and edge cases your notes say are not covered yet, and use different test inputs than last time.
+
+Process:
+1. Log in using the credentials and login method in site-config
 2. Navigate to the target page
-3. Explore the page as a real user would — look at what is there, understand what it does
-4. Test it thoroughly: try editing fields, submitting forms, navigating between sections
-5. Try edge cases: empty values, very long strings, invalid data types, boundary numbers
-6. Look for anything broken, missing, or behaving unexpectedly
-7. When you are done, write a clear report of every bug you found with: URL, steps to reproduce, expected vs actual behaviour, severity
+3. Explore it as a real user would — understand what is there and what it does
+4. Test it thoroughly: edit fields, submit forms, navigate between sections
+5. Try edge cases: empty values, very long strings, invalid data types, boundary numbers, special characters
+6. Reproduce any suspected bug once before reporting it
 
-Do not ask for direction — use your judgement to decide what to test and how.
-If you are running low on turns, stop testing and write a partial report with what you have found so far." \
+When finished — or as soon as you are running low on turns:
+- Write your bug report to ${REPORT_FILE} with write_file. For every bug: URL, steps to reproduce, expected vs actual behaviour, severity.
+- Update ${NOTES_FILE}: what you covered this run, what is still untested, site quirks you learned.
+- Print the report as your final message." \
   $PROVIDER_FLAGS
+
+echo ""
+if [ -f "$REPORT_FILE" ]; then
+  echo "▶ Report written to $REPORT_FILE"
+else
+  echo "▶ No report file was written this run (expected $REPORT_FILE)"
+fi

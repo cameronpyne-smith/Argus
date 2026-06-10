@@ -33,6 +33,9 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
+      # QA runs on a local model can have slow turns; don't let the browser
+      # session reaper kill the page state between model calls.
+      - BROWSER_INACTIVITY_TIMEOUT=600
       # To expose the OpenAI-compatible API server beyond localhost,
       # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
       # - API_SERVER_HOST=0.0.0.0

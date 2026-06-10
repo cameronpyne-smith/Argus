@@ -27,6 +27,22 @@ summary: How to explore a web app, what counts as a bug, and how to report findi
 5. **Exhaust alternatives before concluding something is broken.** If one approach fails, try another.
    A click that does nothing is worth retrying with a different method before reporting it.
 
+## Browser Console Rules
+
+- **Always wrap `browser_console` JavaScript in an IIFE**: `(() => { const btn = ...; return btn?.textContent })()`.
+  Consecutive evals share one JS scope — a bare `const btn = ...` will fail next time with
+  "Identifier 'btn' has already been declared".
+- To wait for an async UI update from inside the page: `await new Promise(r => setTimeout(r, 2000))`
+  (or use the terminal: `sleep 2`), then re-snapshot.
+- Use the console to *inspect* and to work around known SPA event quirks — not to bypass the UI.
+  Submitting data by calling the backend API directly is never a valid test.
+
+## Credentials
+
+Only ever use the credentials provided in the site-config skill. Never invent, guess,
+or reuse credentials from anywhere else, and never try to register new accounts unless
+the task explicitly asks for it.
+
 ## What Counts as a Bug
 
 - A field accepts and saves clearly invalid data (XSS string, negative salary)
@@ -54,7 +70,8 @@ Before reporting, confirm:
 ## Filing a Bug Report
 
 When you find a bug, record:
-- **URL** where the bug occurred
+- **URL** where the bug occurred — copy it exactly from the browser (navigate/snapshot
+  output). Never write a URL from memory; an invented URL makes the report unusable.
 - **Steps to reproduce** — from login, step by step
 - **Expected behaviour** — what should have happened
 - **Actual behaviour** — what actually happened
