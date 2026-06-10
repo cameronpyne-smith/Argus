@@ -67,6 +67,19 @@ Before reporting, confirm:
 2. Take a screenshot if possible to show what you saw
 3. Check the browser console for related errors
 
+## Screenshot Each Confirmed Bug
+
+Issues with a picture get fixed faster. When you confirm a bug:
+1. With the buggy state still visible on screen, call browser_vision — its result
+   includes a screenshot_path.
+2. Copy that file to the report screenshots directory with a name describing the bug:
+   `cp <screenshot_path> /opt/data/reports/screenshots/<short-bug-name>.png`
+3. Add this line to the bug's section in your report:
+   `Screenshot: /opt/data/reports/screenshots/<short-bug-name>.png`
+
+One screenshot per bug is enough — take it at the moment the bug is most visible
+(e.g. the saved bad value on screen, the missing error message after submit).
+
 ## Filing a Bug Report
 
 When you find a bug, record:

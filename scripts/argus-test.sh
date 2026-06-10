@@ -13,6 +13,10 @@ set -euo pipefail
 SKILL=""
 MAX_TURNS=400
 PROVIDER_FLAGS=""
+# Issue filing default comes from ARGUS_FILE_ISSUES in /opt/data/.env;
+# --issues / --no-issues override per run. Report is always written.
+FILE_ISSUES="$(grep -E '^ARGUS_FILE_ISSUES=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+FILE_ISSUES="${FILE_ISSUES:-false}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +26,12 @@ while [[ $# -gt 0 ]]; do
     --max-turns)
       MAX_TURNS="$2"
       shift 2 ;;
+    --issues)
+      FILE_ISSUES=true
+      shift ;;
+    --no-issues)
+      FILE_ISSUES=false
+      shift ;;
     -*)
       echo "Unknown flag: $1"
       exit 1 ;;
@@ -94,4 +104,23 @@ if [ -f "$REPORT_FILE" ]; then
   echo "▶ Report written to $REPORT_FILE"
 else
   echo "▶ No report file was written this run (expected $REPORT_FILE)"
+fi
+
+# ── GitHub issue filing (separate filer session) ──────────────────────────
+# Gated by ARGUS_FILE_ISSUES / --issues. The QA report above is the input;
+# a fresh, small agent session reads it, dedupes against existing
+# Argus-labeled issues, and files only reproduced bugs. GH_TOKEN is exported
+# for this invocation only — the main QA agent's gh is unauthenticated.
+if [[ "$FILE_ISSUES" == "true" && -f "$REPORT_FILE" ]]; then
+  ARGUS_GITHUB_TOKEN="$(grep -E '^ARGUS_GITHUB_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+  if [[ -z "$ARGUS_GITHUB_TOKEN" ]]; then
+    echo "✗ Issue filing enabled but ARGUS_GITHUB_TOKEN is not set in /opt/data/.env — skipping."
+  else
+    echo "▶ Filing GitHub issues from $REPORT_FILE ..."
+    argus-file-issues "$REPORT_FILE" $PROVIDER_FLAGS
+  fi
+elif [[ "$FILE_ISSUES" == "true" ]]; then
+  echo "✗ Issue filing enabled but no report file exists — nothing to file."
+else
+  echo "▶ Issue filing is off (enable with --issues or ARGUS_FILE_ISSUES=true) — report only."
 fi

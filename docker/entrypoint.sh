@@ -180,6 +180,15 @@ content = re.sub(
     content, flags=re.MULTILINE
 )
 
+# Allow GH_TOKEN through the terminal sandbox's credential scrubbing.
+# The issue-filer step in argus-test exports GH_TOKEN for its own
+# invocation only, so despite the global allow, only the filer's terminal
+# ever actually has it — the main QA agent's gh stays unauthenticated.
+if re.search(r'^\s+env_passthrough:', content, flags=re.MULTILINE):
+    content = re.sub(r'^(\s+env_passthrough:\s*).*$', r'\g<1>["GH_TOKEN"]', content, flags=re.MULTILINE)
+else:
+    content = re.sub(r'^(terminal:\n)', r'\g<1>  env_passthrough: ["GH_TOKEN"]\n', content, flags=re.MULTILINE)
+
 with open(config_path, "w") as f:
     f.write(content)
 PYEOF

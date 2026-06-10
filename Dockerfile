@@ -119,6 +119,7 @@ RUN ln -sf /opt/hermes/.venv/bin/hermes /opt/hermes/.venv/bin/argus && \
 
 # ---------- argus-test wrapper ----------
 COPY --chmod=0755 scripts/argus-test.sh /usr/local/bin/argus-test
+COPY --chmod=0755 scripts/argus-file-issues.sh /usr/local/bin/argus-file-issues
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
