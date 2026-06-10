@@ -131,10 +131,10 @@ fi
 # to load them — the agent then runs without credentials or methodology.
 rm -rf "$HERMES_HOME/skills/qa"
 
-# Working directories for QA runs: durable bug reports + per-site notes the
-# agent reads/updates across runs so it can vary coverage instead of
-# retreading the same path.
-mkdir -p "$HERMES_HOME/reports" "$HERMES_HOME/qa-notes"
+# Working directories for QA runs: durable bug reports (+ per-bug screenshots)
+# and per-site notes the agent reads/updates across runs so it can vary
+# coverage instead of retreading the same path.
+mkdir -p "$HERMES_HOME/reports/screenshots" "$HERMES_HOME/qa-notes"
 
 # Apply Argus QA config overrides — always enforced so rebuilds don't lose them.
 # Uses Python + ruamel.yaml-style safe sed to patch the live config.yaml in-place.

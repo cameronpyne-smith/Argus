@@ -64,7 +64,7 @@ fi
 echo "▶ Running QA test for '$SKILL' (max turns: ${MAX_TURNS})..."
 echo ""
 
-mkdir -p /opt/data/reports /opt/data/qa-notes
+mkdir -p /opt/data/reports/screenshots /opt/data/qa-notes
 REPORT_FILE="/opt/data/reports/${SKILL}-$(date +%Y%m%d-%H%M).md"
 NOTES_FILE="/opt/data/qa-notes/remundo.md"
 
@@ -91,7 +91,7 @@ Process:
 3. Explore it as a real user would — understand what is there and what it does
 4. Test it thoroughly: edit fields, submit forms, navigate between sections
 5. Try edge cases: empty values, very long strings, invalid data types, boundary numbers, special characters
-6. Reproduce any suspected bug once before reporting it
+6. Reproduce any suspected bug once before reporting it, and screenshot it as described in web-qa-workflow
 
 When finished — or as soon as you are running low on turns:
 - Write your bug report to ${REPORT_FILE} with write_file. For every bug: URL, steps to reproduce, expected vs actual behaviour, severity.

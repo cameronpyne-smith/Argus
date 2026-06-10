@@ -74,11 +74,63 @@ RUN_DATE="$(date +%Y-%m-%d)"
 REPORT_NAME="$(basename "$REPORT_FILE")"
 rm -f /tmp/argus-filed-issues.md  # stale summary from a previous run
 
+# ── Screenshot upload (inline images in issues) ───────────────────────────
+# GitHub has no API for issue attachments, so screenshots referenced in the
+# report are uploaded to a PUBLIC artifacts repo via the Contents API and
+# the local paths replaced with raw URLs in a temp copy of the report. The
+# agent then embeds them as ![..](url) — GitHub's camo proxy renders any
+# publicly fetchable URL inline. Done here in the script, not by the agent.
+ARTIFACTS_REPO="$(grep -E '^ARGUS_ARTIFACTS_REPO=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+ARTIFACTS_REPO="${ARTIFACTS_REPO:-remundo-xml/argus-artifacts}"
+ARTIFACTS_TOKEN="$(grep -E '^ARGUS_ARTIFACTS_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+
+FILER_REPORT="$REPORT_FILE"
+mapfile -t SCREENSHOTS < <(grep -oE '/opt/data/reports/screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg)' "$REPORT_FILE" | sort -u)
+
+if [[ ${#SCREENSHOTS[@]} -gt 0 && -z "$ARTIFACTS_TOKEN" ]]; then
+  echo "▶ Report references ${#SCREENSHOTS[@]} screenshot(s) but ARGUS_ARTIFACTS_TOKEN is not set — issues will be filed without images."
+elif [[ ${#SCREENSHOTS[@]} -gt 0 ]]; then
+  FILER_REPORT="/tmp/argus-report-for-filing.md"
+  cp "$REPORT_FILE" "$FILER_REPORT"
+  uploaded=0
+  for shot in "${SCREENSHOTS[@]}"; do
+    [[ -f "$shot" ]] || { echo "  ⚠ referenced screenshot missing: $shot"; continue; }
+    dest="screenshots/$(date +%Y-%m)/$(date +%Y%m%d-%H%M%S)-$(basename "$shot")"
+    url="$(python3 - "$shot" "$dest" "$ARTIFACTS_REPO" "$ARTIFACTS_TOKEN" <<'PYEOF'
+import base64, json, sys, time, urllib.request
+src, dest, repo, token = sys.argv[1:5]
+with open(src, "rb") as f:
+    b64 = base64.b64encode(f.read()).decode()
+body = json.dumps({"message": f"Argus screenshot {dest}", "content": b64}).encode()
+last = None
+for attempt in range(5):  # GitHub intermittently 401s fresh fine-grained PATs
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/contents/{dest}",
+        data=body, method="PUT",
+        headers={"Authorization": f"Bearer {token}",
+                 "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req) as r:
+            print(json.load(r)["content"]["download_url"])
+            sys.exit(0)
+    except Exception as e:
+        last = e
+        time.sleep(2)
+print(f"upload failed: {last}", file=sys.stderr)
+sys.exit(1)
+PYEOF
+)" || { echo "  ⚠ upload failed for $shot — leaving local path"; continue; }
+    sed -i "s|$shot|$url|g" "$FILER_REPORT"
+    uploaded=$((uploaded + 1))
+  done
+  echo "▶ Uploaded $uploaded/${#SCREENSHOTS[@]} screenshot(s) to $ARTIFACTS_REPO"
+fi
+
 # shellcheck disable=SC2086
 argus chat --max-turns 80 -t terminal,file \
   -q "You are filing QA bugs as GitHub issues in the repository ${REPO}. The gh CLI is already authenticated — just run gh commands in the terminal.
 
-Step 1 — read the bug report at ${REPORT_FILE} with read_file.
+Step 1 — read the bug report at ${FILER_REPORT} with read_file.
 
 Step 2 — fetch existing Argus issues for dedupe. Run:
 gh issue list -R ${REPO} --label Argus --state all --limit 200 --json number,title,state
@@ -89,7 +141,7 @@ Step 3 — go through each bug in the report and decide:
 - FILE it otherwise. If a CLOSED issue from step 2 describes the same bug, still file it and include a line 'Regression — previously fixed in #<number>' at the top of the body.
 
 Step 4 — for each bug to file:
-a. Write the issue body to /tmp/issue-<n>.md with write_file. The body is the bug's full section copied from the report — URL, steps to reproduce, expected behaviour, actual behaviour, severity — ending with the footer line:
+a. Write the issue body to /tmp/issue-<n>.md with write_file. The body is the bug's full section copied from the report — URL, steps to reproduce, expected behaviour, actual behaviour, severity. If the section has a 'Screenshot:' line with an https URL, embed it as an image instead: ![bug screenshot](<that url>). End with the footer line:
    _Filed by Argus from ${REPORT_NAME} (${RUN_DATE})_
 b. Create the issue:
 gh issue create -R ${REPO} --label Argus --title \"<short factual title>\" --body-file /tmp/issue-<n>.md
