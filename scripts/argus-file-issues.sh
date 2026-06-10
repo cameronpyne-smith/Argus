@@ -21,6 +21,10 @@ while [[ $# -gt 0 ]]; do
     --local)
       PROVIDER_FLAGS="--provider local -m qwen3.5:35b"
       shift ;;
+    --provider|-m|--max-turns)
+      # pass-through (argus-test forwards its expanded provider flags)
+      PROVIDER_FLAGS="$PROVIDER_FLAGS $1 $2"
+      shift 2 ;;
     -*)
       echo "Unknown flag: $1"
       exit 1 ;;
@@ -126,6 +130,10 @@ PYEOF
   echo "▶ Uploaded $uploaded/${#SCREENSHOTS[@]} screenshot(s) to $ARTIFACTS_REPO"
 fi
 
+# Timestamp before the agent runs — afterwards, anything Argus-labeled created
+# from this moment on is "this run's issues" (used for project-board placement).
+FILING_START_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # shellcheck disable=SC2086
 argus chat --max-turns 80 -t terminal,file \
   -q "You are filing QA bugs as GitHub issues in the repository ${REPO}. The gh CLI is already authenticated — just run gh commands in the terminal.
@@ -163,4 +171,43 @@ if [[ -f "$SUMMARY" ]]; then
   { echo ""; echo "---"; echo ""; cat "$SUMMARY"; } >> "$REPORT_FILE"
   rm -f "$SUMMARY"
   echo "▶ Filing summary appended to $REPORT_FILE"
+fi
+
+# ── Project board placement (optional, generic) ───────────────────────────
+# When ARGUS_GITHUB_PROJECT is set in /opt/data/.env, add this run's newly
+# created issues to that Projects v2 board (resolved by title under the repo
+# owner). Done deterministically here, not by the agent: query issues created
+# since FILING_START_TS rather than parsing the model's summary.
+# Requires the PAT to have org-level 'Projects: read & write' — without it,
+# this warns and the issues stay repo-only.
+# NOTE: a project's own auto-add workflow (e.g. an org-wide catch-all) can
+# still pull issues onto OTHER boards — that is GitHub-side config.
+GH_PROJECT="$(grep -E '^ARGUS_GITHUB_PROJECT=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+if [[ -n "$GH_PROJECT" ]]; then
+  OWNER="${REPO%%/*}"
+  PROJECT_NUM="$(HOME="$SUBPROC_HOME" gh project list --owner "$OWNER" --limit 100 --format json 2>/dev/null \
+    | ARGUS_PROJECT_TITLE="$GH_PROJECT" python3 -c "
+import json, os, sys
+want = os.environ['ARGUS_PROJECT_TITLE'].strip().lower()
+try:
+    projects = json.load(sys.stdin).get('projects', [])
+except Exception:  # gh errored or printed nothing (e.g. token lacks Projects perm)
+    projects = []
+print(next((p['number'] for p in projects if p['title'].strip().lower() == want), ''))
+" )" || PROJECT_NUM=""
+  if [[ -z "$PROJECT_NUM" ]]; then
+    echo "⚠ Project '$GH_PROJECT' not found under $OWNER (or token lacks org Projects read/write) — issues stay repo-only."
+  else
+    added=0
+    while IFS= read -r issue_url; do
+      [[ -n "$issue_url" ]] || continue
+      if HOME="$SUBPROC_HOME" gh project item-add "$PROJECT_NUM" --owner "$OWNER" --url "$issue_url" >/dev/null 2>&1; then
+        added=$((added + 1))
+      else
+        echo "  ⚠ could not add $issue_url to project '$GH_PROJECT'"
+      fi
+    done < <(HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state open --limit 50 \
+               --json url,createdAt --jq ".[] | select(.createdAt >= \"$FILING_START_TS\") | .url" 2>/dev/null)
+    echo "▶ Added $added issue(s) to project '$GH_PROJECT' (#$PROJECT_NUM)"
+  fi
 fi

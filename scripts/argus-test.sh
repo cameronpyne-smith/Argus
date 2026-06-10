@@ -91,7 +91,11 @@ Process:
 3. Explore it as a real user would — understand what is there and what it does
 4. Test it thoroughly: edit fields, submit forms, navigate between sections
 5. Try edge cases: empty values, very long strings, invalid data types, boundary numbers, special characters
-6. Reproduce any suspected bug once before reporting it, and screenshot it as described in web-qa-workflow
+6. Reproduce any suspected bug once before reporting it
+7. Capture evidence for every confirmed bug, immediately while it is on screen:
+   a. Call browser_vision — its result contains a screenshot_path
+   b. Run in terminal: cp <that screenshot_path> /opt/data/reports/screenshots/<short-bug-name>.png
+   c. Put this line in that bug's section of your report: Screenshot: /opt/data/reports/screenshots/<short-bug-name>.png
 
 When finished — or as soon as you are running low on turns:
 - Write your bug report to ${REPORT_FILE} with write_file. For every bug: URL, steps to reproduce, expected vs actual behaviour, severity.
