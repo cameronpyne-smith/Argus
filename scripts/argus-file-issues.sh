@@ -130,8 +130,18 @@ PYEOF
   echo "▶ Uploaded $uploaded/${#SCREENSHOTS[@]} screenshot(s) to $ARTIFACTS_REPO"
 fi
 
+# Labels: 'Argus' is always applied (dedupe depends on it). Extra labels are
+# per-deployment config, e.g. ARGUS_EXTRA_LABELS=salmons or =triage,frontend.
+EXTRA_LABELS="$(grep -E '^ARGUS_EXTRA_LABELS=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+LABEL_FLAGS="--label Argus"
+IFS=',' read -ra _extra <<< "$EXTRA_LABELS"
+for _l in "${_extra[@]}"; do
+  _l="$(echo "$_l" | xargs)"
+  [[ -n "$_l" ]] && LABEL_FLAGS="$LABEL_FLAGS --label \"$_l\""
+done
+
 # Timestamp before the agent runs — afterwards, anything Argus-labeled created
-# from this moment on is "this run's issues" (used for project-board placement).
+# from this moment on is "this run's issues" (used for type + board placement).
 FILING_START_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # shellcheck disable=SC2086
@@ -141,18 +151,19 @@ argus chat --max-turns 80 -t terminal,file \
 Step 1 — read the bug report at ${FILER_REPORT} with read_file.
 
 Step 2 — fetch existing Argus issues for dedupe. Run:
-gh issue list -R ${REPO} --label Argus --state all --limit 200 --json number,title,state
+gh issue list -R ${REPO} --label Argus --state all --limit 200 --json number,title,state,stateReason
 
 Step 3 — go through each bug in the report and decide:
 - SKIP if it was not actually reproduced: no concrete reproduction steps with an observed actual result, or marked 'needs verification' / 'not tested'. These stay in the report only.
 - SKIP if an OPEN issue from step 2 already describes the same bug (same page + same behaviour, even if worded differently). Note its #number.
-- FILE it otherwise. If a CLOSED issue from step 2 describes the same bug, still file it and include a line 'Regression — previously fixed in #<number>' at the top of the body.
+- SKIP if a CLOSED issue with stateReason NOT_PLANNED describes the same bug — the team has decided not to act on it.
+- FILE it otherwise. If a CLOSED issue with stateReason COMPLETED describes the same bug, still file it and include a line 'Regression — previously fixed in #<number>' at the top of the body.
 
 Step 4 — for each bug to file:
 a. Write the issue body to /tmp/issue-<n>.md with write_file. The body is the bug's full section copied from the report — URL, steps to reproduce, expected behaviour, actual behaviour, severity. If the section has a 'Screenshot:' line with an https URL, embed it as an image instead: ![bug screenshot](<that url>). End with the footer line:
    _Filed by Argus from ${REPORT_NAME} (${RUN_DATE})_
 b. Create the issue:
-gh issue create -R ${REPO} --label Argus --title \"<short factual title>\" --body-file /tmp/issue-<n>.md
+gh issue create -R ${REPO} ${LABEL_FLAGS} --title \"<short factual title>\" --body-file /tmp/issue-<n>.md
    Titles are short, factual, no prefixes or tags, e.g.: Expense form saves with empty required Title field
    If the bug is security-related (XSS, injection, auth bypass), add: --label Security
 
@@ -173,20 +184,43 @@ if [[ -f "$SUMMARY" ]]; then
   echo "▶ Filing summary appended to $REPORT_FILE"
 fi
 
-# ── Project board placement (optional, generic) ───────────────────────────
-# When ARGUS_GITHUB_PROJECT is set in /opt/data/.env, add this run's newly
-# created issues to that Projects v2 board (resolved by title under the repo
-# owner). Done deterministically here, not by the agent: query issues created
-# since FILING_START_TS rather than parsing the model's summary.
-# Requires the PAT to have org-level 'Projects: read & write' — without it,
-# this warns and the issues stay repo-only.
-# NOTE: a project's own auto-add workflow (e.g. an org-wide catch-all) can
-# still pull issues onto OTHER boards — that is GitHub-side config.
+# ── Post-filing decoration (deterministic, not the agent) ─────────────────
+# Collect this run's new issues (created since FILING_START_TS) once, then:
+#   * set the issue TYPE        — ARGUS_ISSUE_TYPE in .env, default "Bug"
+#                                 (org issue type; empty value disables)
+#   * add to a Projects v2 board — ARGUS_GITHUB_PROJECT in .env (board title
+#                                 under the repo owner; unset disables; needs
+#                                 org-level 'Projects: read & write' on the PAT)
+# NOTE: another board's auto-add workflow can still pull issues onto OTHER
+# boards — that is GitHub-side config, not controllable from here.
+ISSUE_TYPE_RAW="$(grep -E '^ARGUS_ISSUE_TYPE=' /opt/data/.env 2>/dev/null | tail -1)"
+if [[ -n "$ISSUE_TYPE_RAW" ]]; then
+  ISSUE_TYPE="$(echo "$ISSUE_TYPE_RAW" | cut -d= -f2- | xargs)"   # may be set to empty to disable
+else
+  ISSUE_TYPE="Bug"
+fi
 GH_PROJECT="$(grep -E '^ARGUS_GITHUB_PROJECT=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
-if [[ -n "$GH_PROJECT" ]]; then
-  OWNER="${REPO%%/*}"
-  PROJECT_NUM="$(HOME="$SUBPROC_HOME" gh project list --owner "$OWNER" --limit 100 --format json 2>/dev/null \
-    | ARGUS_PROJECT_TITLE="$GH_PROJECT" python3 -c "
+
+# Retried because the PAT intermittently 401s — one silent failure here used
+# to skip type/board decoration for the whole run.
+NEW_ISSUES=()
+for _attempt in 1 2 3; do
+  mapfile -t NEW_ISSUES < <(HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state open --limit 50 \
+    --json number,url,createdAt --jq ".[] | select(.createdAt >= \"$FILING_START_TS\") | \"\(.number) \(.url)\"" 2>/dev/null)
+  [[ ${#NEW_ISSUES[@]} -gt 0 ]] && break
+  sleep 2
+done
+
+if [[ ${#NEW_ISSUES[@]} -eq 0 ]]; then
+  echo "▶ No new issues detected this run — skipping type/board decoration."
+fi
+
+if [[ ${#NEW_ISSUES[@]} -gt 0 ]]; then
+  PROJECT_NUM=""
+  if [[ -n "$GH_PROJECT" ]]; then
+    OWNER="${REPO%%/*}"
+    PROJECT_NUM="$(HOME="$SUBPROC_HOME" gh project list --owner "$OWNER" --limit 100 --format json 2>/dev/null \
+      | ARGUS_PROJECT_TITLE="$GH_PROJECT" python3 -c "
 import json, os, sys
 want = os.environ['ARGUS_PROJECT_TITLE'].strip().lower()
 try:
@@ -195,19 +229,27 @@ except Exception:  # gh errored or printed nothing (e.g. token lacks Projects pe
     projects = []
 print(next((p['number'] for p in projects if p['title'].strip().lower() == want), ''))
 " )" || PROJECT_NUM=""
-  if [[ -z "$PROJECT_NUM" ]]; then
-    echo "⚠ Project '$GH_PROJECT' not found under $OWNER (or token lacks org Projects read/write) — issues stay repo-only."
-  else
-    added=0
-    while IFS= read -r issue_url; do
-      [[ -n "$issue_url" ]] || continue
+    [[ -z "$PROJECT_NUM" ]] && echo "⚠ Project '$GH_PROJECT' not found under $OWNER (or token lacks org Projects read/write) — issues stay repo-only."
+  fi
+
+  typed=0; added=0
+  for entry in "${NEW_ISSUES[@]}"; do
+    num="${entry%% *}"; issue_url="${entry#* }"
+    if [[ -n "$ISSUE_TYPE" ]]; then
+      if HOME="$SUBPROC_HOME" gh api -X PATCH "repos/$REPO/issues/$num" -f "type=$ISSUE_TYPE" >/dev/null 2>&1; then
+        typed=$((typed + 1))
+      else
+        echo "  ⚠ could not set type '$ISSUE_TYPE' on #$num (org issue types enabled?)"
+      fi
+    fi
+    if [[ -n "$PROJECT_NUM" ]]; then
       if HOME="$SUBPROC_HOME" gh project item-add "$PROJECT_NUM" --owner "$OWNER" --url "$issue_url" >/dev/null 2>&1; then
         added=$((added + 1))
       else
-        echo "  ⚠ could not add $issue_url to project '$GH_PROJECT'"
+        echo "  ⚠ could not add #$num to project '$GH_PROJECT'"
       fi
-    done < <(HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state open --limit 50 \
-               --json url,createdAt --jq ".[] | select(.createdAt >= \"$FILING_START_TS\") | .url" 2>/dev/null)
-    echo "▶ Added $added issue(s) to project '$GH_PROJECT' (#$PROJECT_NUM)"
-  fi
+    fi
+  done
+  [[ -n "$ISSUE_TYPE" ]] && echo "▶ Set type '$ISSUE_TYPE' on $typed/${#NEW_ISSUES[@]} new issue(s)"
+  [[ -n "$PROJECT_NUM" ]] && echo "▶ Added $added/${#NEW_ISSUES[@]} new issue(s) to project '$GH_PROJECT' (#$PROJECT_NUM)"
 fi
