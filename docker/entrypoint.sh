@@ -131,6 +131,11 @@ fi
 # to load them — the agent then runs without credentials or methodology.
 rm -rf "$HERMES_HOME/skills/qa"
 
+# Retired page-specific skills: their facts moved into the coverage ledger at
+# qa-notes/<site>/ (index.md + per-area files). Remove stale flat copies so
+# the agent can't load outdated page instructions.
+rm -rf "$HERMES_HOME/skills/main-terms" "$HERMES_HOME/skills/expenses" "$HERMES_HOME/skills/hire-worker-wizard"
+
 # Working directories for QA runs: durable bug reports (+ per-bug screenshots)
 # and per-site notes the agent reads/updates across runs so it can vary
 # coverage instead of retreading the same path.

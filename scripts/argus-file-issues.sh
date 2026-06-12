@@ -137,7 +137,7 @@ LABEL_FLAGS="--label Argus"
 IFS=',' read -ra _extra <<< "$EXTRA_LABELS"
 for _l in "${_extra[@]}"; do
   _l="$(echo "$_l" | xargs)"
-  [[ -n "$_l" ]] && LABEL_FLAGS="$LABEL_FLAGS --label \"$_l\""
+  if [[ -n "$_l" ]]; then LABEL_FLAGS="$LABEL_FLAGS --label \"$_l\""; fi
 done
 
 # Timestamp before the agent runs — afterwards, anything Argus-labeled created
@@ -207,7 +207,7 @@ NEW_ISSUES=()
 for _attempt in 1 2 3; do
   mapfile -t NEW_ISSUES < <(HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state open --limit 50 \
     --json number,url,createdAt --jq ".[] | select(.createdAt >= \"$FILING_START_TS\") | \"\(.number) \(.url)\"" 2>/dev/null)
-  [[ ${#NEW_ISSUES[@]} -gt 0 ]] && break
+  if [[ ${#NEW_ISSUES[@]} -gt 0 ]]; then break; fi
   sleep 2
 done
 
@@ -229,7 +229,7 @@ except Exception:  # gh errored or printed nothing (e.g. token lacks Projects pe
     projects = []
 print(next((p['number'] for p in projects if p['title'].strip().lower() == want), ''))
 " )" || PROJECT_NUM=""
-    [[ -z "$PROJECT_NUM" ]] && echo "⚠ Project '$GH_PROJECT' not found under $OWNER (or token lacks org Projects read/write) — issues stay repo-only."
+    if [[ -z "$PROJECT_NUM" ]]; then echo "⚠ Project '$GH_PROJECT' not found under $OWNER (or token lacks org Projects read/write) — issues stay repo-only."; fi
   fi
 
   typed=0; added=0
@@ -250,6 +250,6 @@ print(next((p['number'] for p in projects if p['title'].strip().lower() == want)
       fi
     fi
   done
-  [[ -n "$ISSUE_TYPE" ]] && echo "▶ Set type '$ISSUE_TYPE' on $typed/${#NEW_ISSUES[@]} new issue(s)"
-  [[ -n "$PROJECT_NUM" ]] && echo "▶ Added $added/${#NEW_ISSUES[@]} new issue(s) to project '$GH_PROJECT' (#$PROJECT_NUM)"
+  if [[ -n "$ISSUE_TYPE" ]]; then echo "▶ Set type '$ISSUE_TYPE' on $typed/${#NEW_ISSUES[@]} new issue(s)"; fi
+  if [[ -n "$PROJECT_NUM" ]]; then echo "▶ Added $added/${#NEW_ISSUES[@]} new issue(s) to project '$GH_PROJECT' (#$PROJECT_NUM)"; fi
 fi
