@@ -23,7 +23,7 @@ INDEX="$SITE_DIR/index.md"
 RUN_DIR="/opt/data/run"
 
 FOCUS=""
-PERSONA="default"
+PERSONA="candidate"
 MAX_TURNS=400
 PROVIDER_FLAGS=""
 DISCOVER=false
@@ -267,11 +267,15 @@ if [[ -s "$RUN_DIR/new-areas.md" ]]; then
   while IFS='|' read -r raw_name raw_url _; do
     name="$(echo "$raw_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | sed 's/^-*//; s/-*$//')"
     url="$(echo "$raw_url" | tr -d '[:space:]')"
+    url="${url%%\?*}"   # query strings are views, not areas
     [[ -n "$name" && "$url" == https://${SITE_HOST}/* ]] || continue
-    if ! awk -F'|' -v a="$name" -v p="$PERSONA" '
+    # Dedupe on BOTH name and URL: discovery agents record the same page
+    # under several names (hire-worker / create-worker / hire-a-worker-wizard
+    # were all /create-eorinstance in one run).
+    if ! awk -F'|' -v a="$name" -v u="$url" -v p="$PERSONA" '
          /^#/ {next}
-         { gsub(/^[ \t]+|[ \t]+$/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $3) }
-         $1==a && $3==p { found=1 } END { exit !found }' "$INDEX"; then
+         { gsub(/^[ \t]+|[ \t]+$/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $2); gsub(/^[ \t]+|[ \t]+$/, "", $3) }
+         $3==p { sub(/\?.*$/, "", $2); if ($1==a || $2==u) found=1 } END { exit !found }' "$INDEX"; then
       echo "$name | $url | $PERSONA | never" >> "$INDEX"
       echo "▶ New area discovered: $name ($url)"
     fi
