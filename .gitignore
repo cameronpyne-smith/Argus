@@ -79,3 +79,4 @@ docs/superpowers/*
 
 # Temp
 copilot-context.md
+agent-config/login-*.js

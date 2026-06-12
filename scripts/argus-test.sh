@@ -125,6 +125,22 @@ STAMP="$(date +%Y%m%d-%H%M)"
 REPORT_FILE="/opt/data/reports/${AREA}-${STAMP}.md"
 ARCHIVE_DIR="/opt/data/reports/parts/${AREA}-${STAMP}"
 
+# Login instructions are inlined VERBATIM into the goal prompt. Models keep
+# improvising broken login JS (missing input-event dispatches) when asked to
+# reproduce the snippet from a skill loaded many turns earlier — inline text
+# in the protected first message gets copied faithfully.
+LOGIN_JS="$(cat "/opt/data/skills/site-config/login-${PERSONA}.js" 2>/dev/null || true)"
+MFA_JS="$(cat /opt/data/skills/site-config/mfa-skip.js 2>/dev/null || true)"
+if [[ -n "$LOGIN_JS" ]]; then
+  LOGIN_STEP="Log in: navigate to https://${SITE_HOST}/login, then run EXACTLY this JavaScript with browser_console — copy it character for character, never write your own login code:
+${LOGIN_JS}
+Wait 5 seconds and check the URL. If it is /mfa-setup, run this with browser_console:
+${MFA_JS}
+Confirm the URL is no longer /login or /mfa-setup before continuing. If login shows 'Email/password incorrect', re-run the exact same snippet once — do not try other credentials or login methods."
+else
+  LOGIN_STEP="Log in as persona '${PERSONA}' using the credentials and login method in site-config"
+fi
+
 # ── Run dir: ALL agent file IO happens in /opt/data/run — one short path the
 # model can reliably retain under context compression.
 rm -rf "$RUN_DIR"
@@ -169,7 +185,7 @@ Rules:
 - Areas are KINDS of pages, not individual records: a list page that opens detail pages is two areas — the list, and the detail page recorded once with one example URL. Never record one entry per record/row/uuid.
 
 Process:
-1. Log in as persona '${PERSONA}' using the credentials and login method in site-config
+1. ${LOGIN_STEP}
 2. Start at https://${SITE_HOST}/dashboard and systematically work through EVERY navigation surface: side nav entries, top bar menus, user/profile menus, settings, tabs inside pages, footer links
 3. For every kind of page you reach that is not in known-areas.md, append one line to /opt/data/run/new-areas.md by running this in the terminal (append with >>, NEVER write_file — rewriting loses earlier entries):
    echo '<short-kebab-area-name> | <exact URL from the browser>' >> /opt/data/run/new-areas.md
@@ -199,7 +215,7 @@ Rules:
 - Prioritise what area.md says is NOT covered yet, and use different test inputs than previous runs.
 
 Process:
-1. Log in as persona '${PERSONA}' using the credentials and login method in site-config
+1. ${LOGIN_STEP}
 2. ${NAV_LINE}
 3. Explore it as a real user would — understand what is there and what it does
 4. Test it thoroughly: edit fields, submit forms, navigate between sections

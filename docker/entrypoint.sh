@@ -92,6 +92,15 @@ if [ -f "$INSTALL_DIR/agent-config/site-config.md" ]; then
     mkdir -p "$HERMES_HOME/skills/site-config"
     cp "$INSTALL_DIR/agent-config/site-config.md" "$HERMES_HOME/skills/site-config/SKILL.md"
 fi
+# Per-persona login JS — argus-test inlines these verbatim into the goal
+# prompt; models keep improvising broken login JS when asked to reproduce
+# the snippet from a skill read many turns earlier.
+for js in "$INSTALL_DIR"/agent-config/*.js; do
+    if [ -f "$js" ]; then
+        mkdir -p "$HERMES_HOME/skills/site-config"
+        cp "$js" "$HERMES_HOME/skills/site-config/"
+    fi
+done
 
 # QA skills — copy from argus-skills/ into flat skill directories so Hermes can
 # discover them. They live OUTSIDE skills/ on purpose: everything under skills/
