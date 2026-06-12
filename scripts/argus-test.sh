@@ -29,7 +29,7 @@ PROVIDER_FLAGS=""
 DISCOVER=false
 # Issue filing default comes from ARGUS_FILE_ISSUES in /opt/data/.env;
 # --issues / --no-issues override per run. Report is always written.
-FILE_ISSUES="$(grep -E '^ARGUS_FILE_ISSUES=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+FILE_ISSUES="$(grep -E '^ARGUS_FILE_ISSUES=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
 FILE_ISSUES="${FILE_ISSUES:-false}"
 
 while [[ $# -gt 0 ]]; do
@@ -216,6 +216,7 @@ Process:
       Actual behaviour: <what you observed>
       Severity: Critical / High / Medium / Low
       Screenshot: /opt/data/reports/screenshots/<short-bug-name>.png
+   The Screenshot line must repeat EXACTLY the same filename you used in the cp command in step b — never invent a different name for it.
    A bug that is not saved to a file does not exist. Never describe bugs only in chat.
 8. If you notice pages or sections OUTSIDE '${AREA}' that your notes do not mention (new nav links, new features), record each by running in the terminal: echo '<area-name> | <exact URL from the browser>' >> /opt/data/run/new-areas.md — do not test them this run.
 
@@ -375,7 +376,7 @@ mv "$RUN_DIR" "$ARCHIVE_DIR" 2>/dev/null || true
 # a fresh, small agent session reads it, dedupes against existing
 # Argus-labeled issues, and files only reproduced bugs.
 if [[ "$FILE_ISSUES" == "true" && -f "$REPORT_FILE" ]]; then
-  ARGUS_GITHUB_TOKEN="$(grep -E '^ARGUS_GITHUB_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+  ARGUS_GITHUB_TOKEN="$(grep -E '^ARGUS_GITHUB_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
   if [[ -z "$ARGUS_GITHUB_TOKEN" ]]; then
     echo "✗ Issue filing enabled but ARGUS_GITHUB_TOKEN is not set in /opt/data/.env — skipping."
   else

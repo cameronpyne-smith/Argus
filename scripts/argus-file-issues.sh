@@ -41,7 +41,7 @@ if [[ -z "$REPORT_FILE" || ! -f "$REPORT_FILE" ]]; then
   exit 1
 fi
 
-ARGUS_GITHUB_TOKEN="$(grep -E '^ARGUS_GITHUB_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+ARGUS_GITHUB_TOKEN="$(grep -E '^ARGUS_GITHUB_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 if [[ -z "$ARGUS_GITHUB_TOKEN" ]]; then
   echo "✗ ARGUS_GITHUB_TOKEN is not set in /opt/data/.env"
   exit 1
@@ -84,9 +84,9 @@ rm -f /tmp/argus-filed-issues.md  # stale summary from a previous run
 # the local paths replaced with raw URLs in a temp copy of the report. The
 # agent then embeds them as ![..](url) — GitHub's camo proxy renders any
 # publicly fetchable URL inline. Done here in the script, not by the agent.
-ARTIFACTS_REPO="$(grep -E '^ARGUS_ARTIFACTS_REPO=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+ARTIFACTS_REPO="$(grep -E '^ARGUS_ARTIFACTS_REPO=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 ARTIFACTS_REPO="${ARTIFACTS_REPO:-remundo-xml/argus-artifacts}"
-ARTIFACTS_TOKEN="$(grep -E '^ARGUS_ARTIFACTS_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+ARTIFACTS_TOKEN="$(grep -E '^ARGUS_ARTIFACTS_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 
 FILER_REPORT="$REPORT_FILE"
 mapfile -t SCREENSHOTS < <(grep -oE '/opt/data/reports/screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg)' "$REPORT_FILE" | sort -u)
@@ -132,7 +132,7 @@ fi
 
 # Labels: 'Argus' is always applied (dedupe depends on it). Extra labels are
 # per-deployment config, e.g. ARGUS_EXTRA_LABELS=salmons or =triage,frontend.
-EXTRA_LABELS="$(grep -E '^ARGUS_EXTRA_LABELS=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+EXTRA_LABELS="$(grep -E '^ARGUS_EXTRA_LABELS=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 LABEL_FLAGS="--label Argus"
 IFS=',' read -ra _extra <<< "$EXTRA_LABELS"
 for _l in "${_extra[@]}"; do
@@ -193,13 +193,13 @@ fi
 #                                 org-level 'Projects: read & write' on the PAT)
 # NOTE: another board's auto-add workflow can still pull issues onto OTHER
 # boards — that is GitHub-side config, not controllable from here.
-ISSUE_TYPE_RAW="$(grep -E '^ARGUS_ISSUE_TYPE=' /opt/data/.env 2>/dev/null | tail -1)"
+ISSUE_TYPE_RAW="$(grep -E '^ARGUS_ISSUE_TYPE=' /opt/data/.env 2>/dev/null | tail -1 || true)"
 if [[ -n "$ISSUE_TYPE_RAW" ]]; then
   ISSUE_TYPE="$(echo "$ISSUE_TYPE_RAW" | cut -d= -f2- | xargs)"   # may be set to empty to disable
 else
   ISSUE_TYPE="Bug"
 fi
-GH_PROJECT="$(grep -E '^ARGUS_GITHUB_PROJECT=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+GH_PROJECT="$(grep -E '^ARGUS_GITHUB_PROJECT=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 
 # Retried because the PAT intermittently 401s — one silent failure here used
 # to skip type/board decoration for the whole run.
@@ -235,6 +235,12 @@ print(next((p['number'] for p in projects if p['title'].strip().lower() == want)
   typed=0; added=0
   for entry in "${NEW_ISSUES[@]}"; do
     num="${entry%% *}"; issue_url="${entry#* }"
+    # Extra labels applied here deterministically — the filing agent was given
+    # the label flags in its prompt but has been seen dropping them.
+    if [[ -n "$EXTRA_LABELS" ]]; then
+      HOME="$SUBPROC_HOME" gh issue edit "$num" -R "$REPO" --add-label "$EXTRA_LABELS" >/dev/null 2>&1 \
+        || echo "  ⚠ could not add extra labels to #$num"
+    fi
     if [[ -n "$ISSUE_TYPE" ]]; then
       if HOME="$SUBPROC_HOME" gh api -X PATCH "repos/$REPO/issues/$num" -f "type=$ISSUE_TYPE" >/dev/null 2>&1; then
         typed=$((typed + 1))
