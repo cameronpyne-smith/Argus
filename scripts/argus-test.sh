@@ -194,7 +194,7 @@ Process:
 When you have walked all navigation — or are running low on turns:
 - Write /opt/data/run/summary.md with write_file: which navigation surfaces you covered and which you could not reach
 - Print the list of newly discovered areas as your final message." \
-    $PROVIDER_FLAGS
+    $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 else
   NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<n>.md (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md."
   # shellcheck disable=SC2086
@@ -241,7 +241,7 @@ When finished — or as soon as you are running low on turns:
 - Rewrite /opt/data/run/area.md with write_file: the CURRENT facts about this area — what exists, its quirks, what is now covered, what remains untested. Replace stale lines instead of appending. No dates, no run history. Maximum 50 lines.
 - Write /opt/data/run/summary.md with write_file: what you did this run.
 - Print a short list of the bugs you recorded as your final message." \
-  $PROVIDER_FLAGS
+  $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 fi
 
 echo ""
@@ -256,7 +256,7 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 3 ]]; do
   argus chat --continue --max-turns 150 \
     -t browser,skills,file,terminal \
     -q "$NUDGE_PROMPT" \
-    $PROVIDER_FLAGS
+    $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
   echo ""
 done
 

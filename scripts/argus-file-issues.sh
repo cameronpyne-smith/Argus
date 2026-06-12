@@ -201,6 +201,10 @@ else
 fi
 GH_PROJECT="$(grep -E '^ARGUS_GITHUB_PROJECT=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 
+# Let the issue list settle: querying immediately after creation has missed
+# the newest issue (created seconds earlier) — only part of a run's issues
+# got type/board decoration.
+sleep 5
 # Retried because the PAT intermittently 401s — one silent failure here used
 # to skip type/board decoration for the whole run.
 NEW_ISSUES=()
