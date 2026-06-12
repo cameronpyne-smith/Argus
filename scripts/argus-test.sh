@@ -35,7 +35,7 @@ FILE_ISSUES="${FILE_ISSUES:-false}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      PROVIDER_FLAGS="--provider local -m qwen3.5:35b"
+      PROVIDER_FLAGS="--provider local -m qwen3.6:35b"
       shift ;;
     --model)
       # local ollama model override, e.g. --model qwen3.6:35b

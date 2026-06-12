@@ -19,7 +19,7 @@ PROVIDER_FLAGS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      PROVIDER_FLAGS="--provider local -m qwen3.5:35b"
+      PROVIDER_FLAGS="--provider local -m qwen3.6:35b"
       shift ;;
     --provider|-m|--max-turns)
       # pass-through (argus-test forwards its expanded provider flags)
