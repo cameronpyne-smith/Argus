@@ -24,7 +24,11 @@ RUN_DIR="/opt/data/run"
 
 FOCUS=""
 PERSONA="candidate"
-MAX_TURNS=400
+# Sessions are deliberately SHORT (120 turns): the context compressor can
+# no-op on long agentic sessions and pin them at the 32K ceiling; every
+# babysitter continuation restarts with freshly compressed context (~10-20K),
+# so many short sessions beat one long one. Override with --max-turns.
+MAX_TURNS=120
 PROVIDER_FLAGS=""
 # Hard wall-clock cap per agent session. The context compressor can no-op on
 # long sessions, pinning the run at the ceiling with multi-minute hung calls;
@@ -256,12 +260,12 @@ echo ""
 # or narrating next steps instead of acting. summary.md is the completion
 # signal; until it exists, continue the SAME session with a corrective nudge.
 NUDGES=0
-while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 3 ]]; do
+while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
   NUDGES=$((NUDGES + 1))
-  echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/3)..."
+  echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/5)..."
   # shellcheck disable=SC2086
   timeout --signal=INT --kill-after=30 "$SESSION_TIMEOUT" \
-    argus chat --continue --max-turns 150 \
+    argus chat --continue --max-turns 120 \
     -t browser,skills,file,terminal \
     -q "$NUDGE_PROMPT" \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"

@@ -156,6 +156,7 @@ gh issue list -R ${REPO} --label Argus --state all --limit 200 --json number,tit
 Step 3 — go through each bug in the report and decide:
 - SKIP if it was not actually reproduced: no concrete reproduction steps with an observed actual result, or marked 'needs verification' / 'not tested'. These stay in the report only.
 - SKIP if an OPEN issue from step 2 already describes the same bug (same page + same behaviour, even if worded differently). Note its #number.
+- SKIP if an OPEN issue describes the same ROOT defect even on a different page (e.g. a site-wide panel/overlay/styling bug already filed for one page is the same bug everywhere). Note its #number.
 - SKIP if a CLOSED issue with stateReason NOT_PLANNED describes the same bug — the team has decided not to act on it.
 - FILE it otherwise. If a CLOSED issue with stateReason COMPLETED describes the same bug, still file it and include a line 'Regression — previously fixed in #<number>' at the top of the body.
 
