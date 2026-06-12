@@ -37,6 +37,10 @@ while [[ $# -gt 0 ]]; do
     --local)
       PROVIDER_FLAGS="--provider local -m qwen3.5:35b"
       shift ;;
+    --model)
+      # local ollama model override, e.g. --model qwen3.6:35b
+      PROVIDER_FLAGS="--provider local -m $2"
+      shift 2 ;;
     --max-turns)
       MAX_TURNS="$2"; shift 2 ;;
     --focus)
@@ -282,10 +286,41 @@ if [[ -s "$RUN_DIR/new-areas.md" ]]; then
   done < "$RUN_DIR/new-areas.md"
 fi
 
+# Drift guard: the model has tested a different page than asked before (a
+# 'dashboard' run once spent itself on /expenses/new). If bugs were recorded
+# and they all sit under ANOTHER known area's URL while none sit under this
+# area's, don't stamp — the area wasn't actually tested.
+DRIFTED=false
+if [[ "$DISCOVER" != "true" && -n "$AREA_URL" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+  AREA_PATH="${AREA_URL#https://${SITE_HOST}}"
+  BUG_URLS="$(grep -h "^URL:" "$RUN_DIR"/bug-*.md 2>/dev/null | sed 's/^URL:[[:space:]]*//')"
+  if [[ -n "$BUG_URLS" && -n "$AREA_PATH" && "$AREA_PATH" != "/" ]]; then
+    hits_here=0; hits_other=0
+    while IFS= read -r u; do
+      if [[ "$u" == "https://${SITE_HOST}${AREA_PATH}"* ]]; then
+        hits_here=$((hits_here + 1))
+      else
+        # does it sit under a DIFFERENT known area of this persona?
+        if awk -F'|' -v u="$u" -v p="$PERSONA" -v me="$AREA" -v host="https://${SITE_HOST}" '
+             /^#/ {next}
+             { for (i=1;i<=3;i++) gsub(/^[ \t]+|[ \t]+$/, "", $i) }
+             $3==p && $1!=me && $2!=host"/dashboard" && index(u, $2)==1 { found=1 }
+             END { exit !found }' "$INDEX"; then
+          hits_other=$((hits_other + 1))
+        fi
+      fi
+    done <<< "$BUG_URLS"
+    if [[ $hits_here -eq 0 && $hits_other -gt 0 ]]; then
+      DRIFTED=true
+      echo "⚠ Drift detected: recorded bugs are under other areas' URLs, none under '${AREA}' — not stamping the index."
+    fi
+  fi
+fi
+
 # Stamp the tested area in the index. Discovery runs do NOT stamp anything —
 # mapped is not tested; discovered areas stay 'never' so test runs pick them up.
 TODAY="$(date +%F)"
-if [[ "$DISCOVER" == "true" ]]; then
+if [[ "$DISCOVER" == "true" || "$DRIFTED" == "true" ]]; then
   :
 elif awk -F'|' -v a="$AREA" -v p="$PERSONA" '
      /^#/ {next}
