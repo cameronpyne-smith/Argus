@@ -26,6 +26,11 @@ FOCUS=""
 PERSONA="candidate"
 MAX_TURNS=400
 PROVIDER_FLAGS=""
+# Hard wall-clock cap per agent session. The context compressor can no-op on
+# long sessions, pinning the run at the ceiling with multi-minute hung calls;
+# timeout fires SIGINT (clean Hermes shutdown) so the post-run salvage still
+# assembles and files whatever bugs were recorded. Override with SESSION_TIMEOUT.
+SESSION_TIMEOUT="${SESSION_TIMEOUT:-2400}"
 DISCOVER=false
 # Issue filing default comes from ARGUS_FILE_ISSUES in /opt/data/.env;
 # --issues / --no-issues override per run. Report is always written.
@@ -170,7 +175,8 @@ echo ""
 if [[ "$DISCOVER" == "true" ]]; then
   NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue mapping the site per your original instructions: walk every navigation surface, append one '<area-name> | <exact URL>' line per newly found area to /opt/data/run/new-areas.md, and when you have covered all navigation write /opt/data/run/summary.md listing what you mapped."
   # shellcheck disable=SC2086
-  argus chat --max-turns "$MAX_TURNS" \
+  timeout --signal=INT --kill-after=30 "$SESSION_TIMEOUT" \
+    argus chat --max-turns "$MAX_TURNS" \
     -t browser,skills,file,terminal \
     -q "You are mapping the ${SITE} web app so it can be QA-tested area by area later. You are logged in as persona '${PERSONA}'. Your job this run is DISCOVERY ONLY — find pages, do not test them.
 
@@ -198,7 +204,8 @@ When you have walked all navigation — or are running low on turns:
 else
   NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<n>.md (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md."
   # shellcheck disable=SC2086
-  argus chat --max-turns "$MAX_TURNS" \
+  timeout --signal=INT --kill-after=30 "$SESSION_TIMEOUT" \
+    argus chat --max-turns "$MAX_TURNS" \
   -t browser,skills,file,terminal \
   -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.
 
@@ -253,7 +260,8 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 3 ]]; do
   NUDGES=$((NUDGES + 1))
   echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/3)..."
   # shellcheck disable=SC2086
-  argus chat --continue --max-turns 150 \
+  timeout --signal=INT --kill-after=30 "$SESSION_TIMEOUT" \
+    argus chat --continue --max-turns 150 \
     -t browser,skills,file,terminal \
     -q "$NUDGE_PROMPT" \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
