@@ -500,8 +500,15 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # Argus fork: never back off when near the REAL window. We run against
+        # a num_ctx-capped local server, where skipping compression means the
+        # server silently truncates the prompt head (system prompt, goal,
+        # credentials) — strictly worse than compression thrash. A pinned run
+        # spent an hour at the ceiling with 114s truncated turns because the
+        # backoff below disabled compression for the rest of the session.
+        _near_ceiling = bool(self.context_length) and tokens >= int(self.context_length * 0.85)
         # Anti-thrashing: back off if recent compressions were ineffective
-        if self._ineffective_compression_count >= 2:
+        if self._ineffective_compression_count >= 2 and not _near_ceiling:
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped — last %d compressions saved <10%% each. "

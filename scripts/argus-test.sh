@@ -212,6 +212,7 @@ Rules:
 - Do not ask for direction. If something does not work, try a different approach on your own.
 - Never end your turn by announcing what you will do next — keep calling tools until the work is done. Your final message comes only after /opt/data/run/summary.md is written.
 - The browser console is only for confirming a UI bug you already observed. Do not spend turns analysing console logs, network requests or backend endpoints on their own.
+- Use browser_snapshot to read pages. Call browser_vision only to capture a bug screenshot or when the snapshot genuinely cannot show something visual — its output is huge and crowds out your context.
 - Prioritise what area.md says is NOT covered yet, and use different test inputs than previous runs.
 
 Process:
