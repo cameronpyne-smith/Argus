@@ -194,6 +194,15 @@ content = re.sub(
     content, flags=re.MULTILINE
 )
 
+# Protect fewer tail messages: wizard pages produce huge snapshots, and with
+# protect_last_n=10 the protected tail alone exceeded the 32K window —
+# compression became a no-op and stopped firing, pinning runs at the ceiling.
+content = re.sub(
+    r'(^compression:\n(?:[ \t]+.*\n)*?[ \t]+protect_last_n:[ \t]*)\d+',
+    r'\g<1>6',
+    content, flags=re.MULTILINE
+)
+
 # Allow GH_TOKEN through the terminal sandbox's credential scrubbing.
 # The issue-filer step in argus-test exports GH_TOKEN for its own
 # invocation only, so despite the global allow, only the filer's terminal
