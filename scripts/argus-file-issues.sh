@@ -140,48 +140,101 @@ for _l in "${_extra[@]}"; do
   if [[ -n "$_l" ]]; then LABEL_FLAGS="$LABEL_FLAGS --label \"$_l\""; fi
 done
 
-# Timestamp before the agent runs — afterwards, anything Argus-labeled created
-# from this moment on is "this run's issues" (used for type + board placement).
-FILING_START_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# ── Decide / execute split ────────────────────────────────────────────────
+# The agent DECIDES (pure judgment + writing files, which it does reliably);
+# the SCRIPT EXECUTES every gh call (deterministic). A filer run once analysed
+# all bugs, wrote the plan in prose, and ended its turn having created ZERO
+# issues — same prompt that worked the next run. Never trust the model to
+# carry out a sequence of side-effecting commands.
+DECIDE_DIR=/tmp/argus-decide
+rm -rf "$DECIDE_DIR"; mkdir -p "$DECIDE_DIR"
+# Script runs the read-only dedup query (reliable) and hands it to the agent.
+HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state all --limit 200 \
+  --json number,title,state,stateReason > "$DECIDE_DIR/existing-issues.json" 2>/dev/null \
+  || echo "[]" > "$DECIDE_DIR/existing-issues.json"
 
 # shellcheck disable=SC2086
-argus chat --max-turns 80 -t terminal,file \
-  -q "You are filing QA bugs as GitHub issues in the repository ${REPO}. The gh CLI is already authenticated — just run gh commands in the terminal.
+argus chat --max-turns 80 -t file \
+  -q "You are triaging QA bugs for GitHub filing. You do NOT touch GitHub — you only read files and WRITE decision files. A later step does the actual filing.
 
-Step 1 — read the bug report at ${FILER_REPORT} with read_file.
+Step 1 — read the bug report at ${FILER_REPORT} with read_file. Each bug is a '## ' section.
+Step 2 — read ${DECIDE_DIR}/existing-issues.json with read_file — the Argus issues already on GitHub.
 
-Step 2 — fetch existing Argus issues for dedupe. Run:
-gh issue list -R ${REPO} --label Argus --state all --limit 200 --json number,title,state,stateReason
+Step 3 — for each '## ' bug section in the report, decide FILE or SKIP:
+- SKIP if not actually reproduced (no concrete steps + observed result, or marked 'needs verification'/'not tested').
+- SKIP if it duplicates another bug in THIS SAME report (file only the first).
+- SKIP if an OPEN existing issue already describes the same bug, even on a different page or worded differently (same root defect = duplicate).
+- SKIP if a CLOSED existing issue with stateReason NOT_PLANNED describes it.
+- FILE otherwise. If a CLOSED existing issue with stateReason COMPLETED describes it, file it and start the body with 'Regression — previously fixed in #<number>'.
 
-Step 3 — go through each bug in the report and decide:
-- SKIP if it was not actually reproduced: no concrete reproduction steps with an observed actual result, or marked 'needs verification' / 'not tested'. These stay in the report only.
-- SKIP if an OPEN issue from step 2 already describes the same bug (same page + same behaviour, even if worded differently). Note its #number.
-- SKIP if an OPEN issue describes the same ROOT defect even on a different page (e.g. a site-wide panel/overlay/styling bug already filed for one page is the same bug everywhere). Note its #number.
-- SKIP if a CLOSED issue with stateReason NOT_PLANNED describes the same bug — the team has decided not to act on it.
-- FILE it otherwise. If a CLOSED issue with stateReason COMPLETED describes the same bug, still file it and include a line 'Regression — previously fixed in #<number>' at the top of the body.
+Step 4 — for each bug you decide to FILE, write ${DECIDE_DIR}/file-NN.md (NN = 01, 02, ...) with EXACTLY this structure:
+TITLE: <short factual title, no prefixes/tags>
+SECURITY: <yes if XSS/injection/auth-bypass, else no>
+---
+<issue body: the bug's URL, steps to reproduce, expected, actual, severity — copied from the report. If the section has a 'Screenshot:' line with an https URL, include the image with ![screenshot](<url>).>
 
-Step 4 — for each bug to file:
-a. Write the issue body to /tmp/issue-<n>.md with write_file. The body is the bug's full section copied from the report — URL, steps to reproduce, expected behaviour, actual behaviour, severity. If the section has a 'Screenshot:' line with an https URL, embed it as an image instead: ![bug screenshot](<that url>). End with the footer line:
-   _Filed by Argus from ${REPORT_NAME} (${RUN_DATE})_
-b. Create the issue:
-gh issue create -R ${REPO} ${LABEL_FLAGS} --title \"<short factual title>\" --body-file /tmp/issue-<n>.md
-   Titles are short, factual, no prefixes or tags, e.g.: Expense form saves with empty required Title field
-   If the bug is security-related (XSS, injection, auth bypass), add: --label Security
+Step 5 — write ${DECIDE_DIR}/_summary.md: a '## Filed issues' list (one line per bug you chose to FILE, by title) and a '## Skipped' list (each skipped bug + the reason / duplicate #number).
 
-Step 5 — write a filing summary to /tmp/argus-filed-issues.md with write_file (do NOT touch ${REPORT_FILE}): a '## Filed issues' heading and a list of every bug with either its new issue URL, the existing issue number it duplicates, or the reason it was skipped.
+Write every file with write_file. Do not run any terminal or gh commands. Your final message: how many you marked FILE vs SKIP." \
+  $PROVIDER_FLAGS || echo "⚠ decide step exited abnormally — proceeding with whatever decision files exist"
 
-Finish by printing that same filed/skipped summary as your final message.
+# Timestamp before any create — anything Argus-labeled after this is "this run".
+FILING_START_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-Rules: only create issues — never edit, close or comment on existing ones. Never file anything that is not in the report. Use URLs exactly as written in the report. gh is already authenticated — never run gh auth login, logout or status. If a gh command fails with 'HTTP 401', just run the exact same command again." \
-  $PROVIDER_FLAGS
+# Deterministic exact-title dedup safety net: the model's semantic dedup is
+# best-effort and non-deterministic — it once re-filed a bug under a title
+# IDENTICAL to an existing issue. Never create an issue whose title (case/space
+# -normalised) already exists. Semantic near-dupes still rely on the agent.
+norm() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
+EXISTING_TITLES="$(python3 -c "
+import json
+try: data=json.load(open('$DECIDE_DIR/existing-issues.json'))
+except Exception: data=[]
+for i in data: print(i.get('title',''))
+" 2>/dev/null)"
+declare -A EXISTING_NORM=()
+while IFS= read -r t; do [[ -n "$t" ]] && EXISTING_NORM["$(norm "$t")"]=1; done <<< "$EXISTING_TITLES"
 
-# The agent only writes its summary to /tmp — appending to the report is done
-# here deterministically (an early agent once 'appended' by overwriting the
-# whole report with just the new section).
-SUMMARY=/tmp/argus-filed-issues.md
-if [[ -f "$SUMMARY" ]]; then
-  { echo ""; echo "---"; echo ""; cat "$SUMMARY"; } >> "$REPORT_FILE"
-  rm -f "$SUMMARY"
+# Script executes the creates deterministically from the decision files.
+filed=0
+shopt -s nullglob
+for df in "$DECIDE_DIR"/file-*.md; do
+  title="$(sed -n 's/^TITLE:[[:space:]]*//p' "$df" | head -1)"
+  security="$(sed -n 's/^SECURITY:[[:space:]]*//p' "$df" | head -1)"
+  # body = everything after the first '---' line
+  body_file="$df.body"
+  awk 'p{print} /^---/{p=1}' "$df" > "$body_file"
+  [[ -n "$title" && -s "$body_file" ]] || { echo "  ⚠ skipping malformed decision file $df"; continue; }
+  if [[ -n "${EXISTING_NORM["$(norm "$title")"]:-}" ]]; then
+    echo "  = skip (title already exists): $title"
+    continue
+  fi
+  sec_label=""
+  case "$security" in [Yy]es|true|TRUE) sec_label='--label Security' ;; esac
+  # shellcheck disable=SC2086
+  if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" $LABEL_FLAGS $sec_label \
+             --title "$title" --body-file "$body_file" 2>&1); then
+    echo "  + filed: $title → $url"
+    filed=$((filed + 1))
+  else
+    # retry once for the intermittent PAT 401
+    sleep 2
+    # shellcheck disable=SC2086
+    if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" $LABEL_FLAGS $sec_label \
+               --title "$title" --body-file "$body_file" 2>&1); then
+      echo "  + filed (retry): $title → $url"
+      filed=$((filed + 1))
+    else
+      echo "  ⚠ failed to file '$title': $url"
+    fi
+  fi
+done
+shopt -u nullglob
+echo "▶ Filed $filed issue(s)"
+
+# Append the agent's filed/skipped summary to the report (deterministic).
+if [[ -f "$DECIDE_DIR/_summary.md" ]]; then
+  { echo ""; echo "---"; echo ""; cat "$DECIDE_DIR/_summary.md"; } >> "$REPORT_FILE"
   echo "▶ Filing summary appended to $REPORT_FILE"
 fi
 

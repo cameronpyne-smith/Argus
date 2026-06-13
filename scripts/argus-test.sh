@@ -384,11 +384,11 @@ if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
       echo "---"
       echo
     done
-    if [ -f "$RUN_DIR/summary.md" ]; then
-      echo "## Session summary"
-      echo
-      cat "$RUN_DIR/summary.md"
-    fi
+    # NB: summary.md is deliberately NOT included. It is the model's end-of-run
+    # recollection, which after heavy compression lists a DIFFERENT, sometimes
+    # fabricated bug set — appending it polluted the filer's input (it once
+    # numbered bugs 1-9 off a 6-bug report). The authoritative bugs are the
+    # per-bug files only. summary.md is kept in the archived run dir for humans.
   } > "$REPORT_FILE"
   BUG_COUNT=$(ls "$RUN_DIR"/bug-*.md | wc -l)
   echo "▶ Report assembled from $BUG_COUNT recorded bug(s): $REPORT_FILE"
