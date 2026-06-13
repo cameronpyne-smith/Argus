@@ -219,6 +219,8 @@ Before you start:
 
 Rules:
 - Test through the browser UI only, like a real user. Never call the backend API directly, and only use the persona '${PERSONA}' credentials from site-config.
+- You are testing the '${AREA}' area, NOT the login flow. Do not test, re-submit, or 'verify' the login form, and never log out. If you get redirected to /login mid-run, just re-run the EXACT login snippet from site-config to get back in — that is routine, not a bug, and never file it as one.
+- NEVER type credentials you made up. The only valid login is the exact email+password in site-config. A login that rejects any other credentials is working correctly — not a bug.
 - The ONLY valid site domain is https://${SITE_HOST} — if you remember any other domain, it is wrong.
 - Do not ask for direction. If something does not work, try a different approach on your own.
 - Never end your turn by announcing what you will do next — keep calling tools until the work is done. Your final message comes only after /opt/data/run/summary.md is written.
