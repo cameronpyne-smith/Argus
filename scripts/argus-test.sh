@@ -256,10 +256,17 @@ When finished — or as soon as you are running low on turns:
 fi
 
 echo ""
-# Babysitter: a small model sometimes ends its turn early — asking a question
-# or narrating next steps instead of acting. summary.md is the completion
-# signal; until it exists, continue the SAME session with a corrective nudge.
+# Babysitter + convergence: a small model rarely writes summary.md voluntarily,
+# so without a convergence signal it rides the whole nudge ceiling even on a
+# clean area (a 33-field form once burned ~2h / the full cycle). summary.md is
+# the explicit completion signal; failing that, we converge when a full 120-turn
+# continuation produces NO NEW bug files. We require TWO consecutive barren
+# continuations (≈ a clean area genuinely has nothing), so areas that find bugs
+# in bursts across continuations are not cut short.
+count_bugs() { ls "$RUN_DIR"/bug-*.md 2>/dev/null | wc -l | tr -d ' '; }
 NUDGES=0
+NO_PROGRESS=0
+PREV_BUGS=$(count_bugs)
 while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
   NUDGES=$((NUDGES + 1))
   echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/5)..."
@@ -270,7 +277,26 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
     -q "$NUDGE_PROMPT" \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
   echo ""
+  # summary.md written this continuation → the loop condition will exit cleanly.
+  [[ -f "$RUN_DIR/summary.md" ]] && break
+  CUR_BUGS=$(count_bugs)
+  if [[ "$CUR_BUGS" == "$PREV_BUGS" ]]; then
+    NO_PROGRESS=$((NO_PROGRESS + 1))
+    if [[ $NO_PROGRESS -ge 2 ]]; then
+      echo "▶ Converged: two continuations recorded no new bugs — ending run."
+      break
+    fi
+  else
+    NO_PROGRESS=0
+  fi
+  PREV_BUGS="$CUR_BUGS"
 done
+
+# If the model never wrote summary.md (converged or hit the nudge cap),
+# synthesise one so the report assembles and the completion state is explicit.
+if [[ ! -f "$RUN_DIR/summary.md" ]]; then
+  echo "Run ended without an agent-written summary (converged or nudge cap reached). Bugs recorded this run: $(count_bugs)." > "$RUN_DIR/summary.md"
+fi
 
 # ── Post-run hygiene (harness-owned, deterministic) ────────────────────────
 # Any URL whose host looks like the site but is not EXACTLY the site host is a
