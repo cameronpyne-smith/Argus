@@ -263,7 +263,8 @@ echo ""
 # continuation produces NO NEW bug files. We require TWO consecutive barren
 # continuations (≈ a clean area genuinely has nothing), so areas that find bugs
 # in bursts across continuations are not cut short.
-count_bugs() { ls "$RUN_DIR"/bug-*.md 2>/dev/null | wc -l | tr -d ' '; }
+# find (not ls|wc) so an empty match is exit 0, never tripping set -e/pipefail.
+count_bugs() { find "$RUN_DIR" -maxdepth 1 -name 'bug-*.md' 2>/dev/null | wc -l | tr -d ' '; }
 NUDGES=0
 NO_PROGRESS=0
 PREV_BUGS=$(count_bugs)
@@ -277,8 +278,12 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
     -q "$NUDGE_PROMPT" \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
   echo ""
-  # summary.md written this continuation → the loop condition will exit cleanly.
-  [[ -f "$RUN_DIR/summary.md" ]] && break
+  # NB: every conditional below uses if/fi, never '[[ ]] && cmd' — under set -e
+  # a statement-level '&&' whose test is false returns 1 and EXITS the script.
+  # This exact footgun silently killed two runs before the babysitter could act.
+  if [[ -f "$RUN_DIR/summary.md" ]]; then
+    break
+  fi
   CUR_BUGS=$(count_bugs)
   if [[ "$CUR_BUGS" == "$PREV_BUGS" ]]; then
     NO_PROGRESS=$((NO_PROGRESS + 1))
