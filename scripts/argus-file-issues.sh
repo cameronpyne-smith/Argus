@@ -196,7 +196,11 @@ declare -A EXISTING_NORM=()
 while IFS= read -r t; do [[ -n "$t" ]] && EXISTING_NORM["$(norm "$t")"]=1; done <<< "$EXISTING_TITLES"
 
 # Script executes the creates deterministically from the decision files.
+# Capture each created issue's number from the returned URL so decoration
+# targets exactly these — no timestamp re-query (which raced GitHub's index
+# and missed the last-created issue, leaving it undecorated).
 filed=0
+CREATED_NUMS=()
 shopt -s nullglob
 for df in "$DECIDE_DIR"/file-*.md; do
   title="$(sed -n 's/^TITLE:[[:space:]]*//p' "$df" | head -1)"
@@ -215,7 +219,7 @@ for df in "$DECIDE_DIR"/file-*.md; do
   if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" $LABEL_FLAGS $sec_label \
              --title "$title" --body-file "$body_file" 2>&1); then
     echo "  + filed: $title → $url"
-    filed=$((filed + 1))
+    filed=$((filed + 1)); CREATED_NUMS+=("${url##*/}")
   else
     # retry once for the intermittent PAT 401
     sleep 2
@@ -223,7 +227,7 @@ for df in "$DECIDE_DIR"/file-*.md; do
     if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" $LABEL_FLAGS $sec_label \
                --title "$title" --body-file "$body_file" 2>&1); then
       echo "  + filed (retry): $title → $url"
-      filed=$((filed + 1))
+      filed=$((filed + 1)); CREATED_NUMS+=("${url##*/}")
     else
       echo "  ⚠ failed to file '$title': $url"
     fi
@@ -255,25 +259,13 @@ else
 fi
 GH_PROJECT="$(grep -E '^ARGUS_GITHUB_PROJECT=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 
-# Let the issue list settle: querying immediately after creation has missed
-# the newest issue (created seconds earlier) — only part of a run's issues
-# got type/board decoration.
-sleep 5
-# Retried because the PAT intermittently 401s — one silent failure here used
-# to skip type/board decoration for the whole run.
-NEW_ISSUES=()
-for _attempt in 1 2 3; do
-  mapfile -t NEW_ISSUES < <(HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state open --limit 50 \
-    --json number,url,createdAt --jq ".[] | select(.createdAt >= \"$FILING_START_TS\") | \"\(.number) \(.url)\"" 2>/dev/null)
-  if [[ ${#NEW_ISSUES[@]} -gt 0 ]]; then break; fi
-  sleep 2
-done
-
-if [[ ${#NEW_ISSUES[@]} -eq 0 ]]; then
-  echo "▶ No new issues detected this run — skipping type/board decoration."
+# Decorate exactly the issues we just created (numbers captured from the
+# create output) — no timestamp re-query, so no race with GitHub's index.
+if [[ ${#CREATED_NUMS[@]} -eq 0 ]]; then
+  echo "▶ No issues created this run — skipping type/board decoration."
 fi
 
-if [[ ${#NEW_ISSUES[@]} -gt 0 ]]; then
+if [[ ${#CREATED_NUMS[@]} -gt 0 ]]; then
   PROJECT_NUM=""
   if [[ -n "$GH_PROJECT" ]]; then
     OWNER="${REPO%%/*}"
@@ -291,8 +283,8 @@ print(next((p['number'] for p in projects if p['title'].strip().lower() == want)
   fi
 
   typed=0; added=0
-  for entry in "${NEW_ISSUES[@]}"; do
-    num="${entry%% *}"; issue_url="${entry#* }"
+  for num in "${CREATED_NUMS[@]}"; do
+    issue_url="https://github.com/$REPO/issues/$num"
     # Extra labels applied here deterministically — the filing agent was given
     # the label flags in its prompt but has been seen dropping them.
     if [[ -n "$EXTRA_LABELS" ]]; then
@@ -314,6 +306,6 @@ print(next((p['number'] for p in projects if p['title'].strip().lower() == want)
       fi
     fi
   done
-  if [[ -n "$ISSUE_TYPE" ]]; then echo "▶ Set type '$ISSUE_TYPE' on $typed/${#NEW_ISSUES[@]} new issue(s)"; fi
-  if [[ -n "$PROJECT_NUM" ]]; then echo "▶ Added $added/${#NEW_ISSUES[@]} new issue(s) to project '$GH_PROJECT' (#$PROJECT_NUM)"; fi
+  if [[ -n "$ISSUE_TYPE" ]]; then echo "▶ Set type '$ISSUE_TYPE' on $typed/${#CREATED_NUMS[@]} new issue(s)"; fi
+  if [[ -n "$PROJECT_NUM" ]]; then echo "▶ Added $added/${#CREATED_NUMS[@]} new issue(s) to project '$GH_PROJECT' (#$PROJECT_NUM)"; fi
 fi
