@@ -37,6 +37,36 @@ summary: How to explore a web app, what counts as a bug, and how to report findi
 - Use the console to *inspect* and to work around known SPA event quirks — not to bypass the UI.
   Submitting data by calling the backend API directly is never a valid test.
 
+## Testing form fields on a Svelte SPA (avoid false positives)
+
+This site is a Svelte SPA where typing does not always register with the
+framework's state. Before you report that a field "doesn't save", "clears
+itself", or "won't persist", rule out your own input method first:
+
+1. After typing, re-read the field's value AND confirm the framework saw it —
+   a value that shows in the DOM but not after a save may mean your keystrokes
+   never fired Svelte's `input` event.
+2. If a typed value seems not to take, set it via the dispatchEvent pattern
+   (`el.value = '...'; el.dispatchEvent(new Event('input', {bubbles:true}))`)
+   and try again. Only if it STILL fails with proper events is it a real bug.
+3. "Typed value doesn't persist" is far more often a test-harness artifact than
+   a site bug. Treat it as suspect until you've confirmed input reached state.
+
+Use **valid, well-formed test data** for the happy path, and only deliberately
+malformed data when you are specifically testing validation. A field correctly
+*rejecting* genuinely invalid input is NOT a bug — e.g. a UK phone in
+international format is `+44 7700900123` (no leading `0` after `+44`); if you
+type `+44 07700900123` and it is rejected, that is the validator working.
+
+## Reading form-heavy pages efficiently
+
+Accessibility snapshots often do NOT render Svelte form fields — the page looks
+empty in a snapshot even when fields are present. Use `browser_vision` (a
+screenshot) or one targeted `document.body.innerText` / querySelectorAll console
+call to map the form ONCE, then test fields directly. Do not burn dozens of
+console calls re-inspecting state every step — map once, act, re-check only what
+you changed.
+
 ## Credentials
 
 Only ever use the credentials provided in the site-config skill. Never invent, guess,
