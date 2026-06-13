@@ -203,6 +203,14 @@ content = re.sub(
     content, flags=re.MULTILINE
 )
 
+# Disable Hermes' post-session background skill/memory review. It runs after
+# EVERY argus chat turn, loads full toolsets (lazy-installs tts etc.), and
+# re-calls the model — useless for a QA filing pipeline. Worse, it once HUNG
+# after a session, blocking the babysitter and post-run so a whole run's
+# findings were lost. 0 = never spawn the review thread.
+content = re.sub(r'^(\s+nudge_interval:\s*).*$', r'\g<1>0', content, flags=re.MULTILINE)
+content = re.sub(r'^(\s+creation_nudge_interval:\s*).*$', r'\g<1>0', content, flags=re.MULTILINE)
+
 # Allow GH_TOKEN through the terminal sandbox's credential scrubbing.
 # The issue-filer step in argus-test exports GH_TOKEN for its own
 # invocation only, so despite the global allow, only the filer's terminal
