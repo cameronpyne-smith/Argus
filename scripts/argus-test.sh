@@ -201,14 +201,14 @@ Process:
 2. Start at https://${SITE_HOST}/dashboard and systematically work through EVERY navigation surface: side nav entries, top bar menus, user/profile menus, settings, tabs inside pages, footer links
 3. For every kind of page you reach that is not in known-areas.md, append one line to /opt/data/run/new-areas.md by running this in the terminal (append with >>, NEVER write_file — rewriting loses earlier entries):
    echo '<short-kebab-area-name> | <exact URL from the browser>' >> /opt/data/run/new-areas.md
-4. If a page is visibly broken when you open it (error screen, blank page, crash), record it as a bug to /opt/data/run/bug-<n>.md (title, exact URL, steps, expected, actual, severity, plus a screenshot via browser_vision and cp to /opt/data/reports/screenshots/<name>.png) — but do not go looking for bugs
+4. If a page is visibly broken when you open it (error screen, blank page, crash), record it as a bug to /opt/data/run/bug-<short-slug>.md (distinct kebab-case slug per bug) (title, exact URL, steps, expected, actual, severity, plus a screenshot via browser_vision and cp to /opt/data/reports/screenshots/<name>.png) — but do not go looking for bugs
 
 When you have walked all navigation — or are running low on turns:
 - Write /opt/data/run/summary.md with write_file: which navigation surfaces you covered and which you could not reach
 - Print the list of newly discovered areas as your final message." \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 else
-  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<n>.md (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md."
+  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md."
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
@@ -240,7 +240,7 @@ Process:
 7. RECORD each confirmed bug immediately, while it is still on screen — all three steps before testing anything else:
    a. Call browser_vision — its result contains a screenshot_path
    b. Run in terminal: cp <that screenshot_path> /opt/data/reports/screenshots/<short-bug-name>.png
-   c. Save the bug with write_file to /opt/data/run/bug-<n>.md containing exactly:
+   c. Save the bug with write_file to /opt/data/run/bug-<short-slug>.md, where <short-slug> is a few kebab-case words from the bug title (e.g. bug-save-button-disabled.md). Use a DISTINCT slug for each different bug so you never overwrite an earlier one; if you are re-recording the SAME bug, reuse its exact filename. The file contains exactly:
       ## <short factual bug title>
       URL: <copied exactly from the browser, never from memory>
       Steps to reproduce: <numbered, from login>
