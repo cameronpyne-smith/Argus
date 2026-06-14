@@ -30,10 +30,12 @@ PERSONA="candidate"
 # so many short sessions beat one long one. Override with --max-turns.
 MAX_TURNS=120
 PROVIDER_FLAGS=""
-# Hard wall-clock cap per agent session. The context compressor can no-op on
-# long sessions, pinning the run at the ceiling with multi-minute hung calls;
-# timeout fires SIGINT (clean Hermes shutdown) so the post-run salvage still
-# assembles and files whatever bugs were recorded. Override with SESSION_TIMEOUT.
+# Hard wall-clock cap per agent session — the backstop for a hung model call
+# (a qwen stream once stalled mid-response and never returned). timeout sends
+# SIGTERM (not SIGINT: SIGINT triggers Hermes' graceful shutdown which itself
+# blocked on the stuck request; SIGTERM's default action terminates), then
+# SIGKILL after --kill-after as the hard guarantee. The post-run salvage still
+# assembles/files whatever bugs were recorded. Override with SESSION_TIMEOUT.
 SESSION_TIMEOUT="${SESSION_TIMEOUT:-2400}"
 DISCOVER=false
 # Issue filing default comes from ARGUS_FILE_ISSUES in /opt/data/.env;
@@ -179,7 +181,7 @@ echo ""
 if [[ "$DISCOVER" == "true" ]]; then
   NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue mapping the site per your original instructions: walk every navigation surface, append one '<area-name> | <exact URL>' line per newly found area to /opt/data/run/new-areas.md, and when you have covered all navigation write /opt/data/run/summary.md listing what you mapped."
   # shellcheck disable=SC2086
-  timeout --signal=INT --kill-after=30 "$SESSION_TIMEOUT" \
+  timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
     -t browser,skills,file,terminal \
     -q "You are mapping the ${SITE} web app so it can be QA-tested area by area later. You are logged in as persona '${PERSONA}'. Your job this run is DISCOVERY ONLY — find pages, do not test them.
@@ -208,7 +210,7 @@ When you have walked all navigation — or are running low on turns:
 else
   NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<n>.md (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md."
   # shellcheck disable=SC2086
-  timeout --signal=INT --kill-after=30 "$SESSION_TIMEOUT" \
+  timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
   -t browser,skills,file,terminal \
   -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.
@@ -274,7 +276,7 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
   NUDGES=$((NUDGES + 1))
   echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/5)..."
   # shellcheck disable=SC2086
-  timeout --signal=INT --kill-after=30 "$SESSION_TIMEOUT" \
+  timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --continue --max-turns 120 \
     -t browser,skills,file,terminal \
     -q "$NUDGE_PROMPT" \

@@ -36,6 +36,12 @@ services:
       # QA runs on a local model can have slow turns; don't let the browser
       # session reaper kill the page state between model calls.
       - BROWSER_INACTIVITY_TIMEOUT=600
+      # Bound model requests so a hung qwen stream fails fast (default 1800s
+      # let one hang ~30min+). A local QA turn is seconds-to-low-minutes.
+      # NB: the volume ~/.argus/.env overrides these via Hermes' dotenv loader,
+      # so keep them in sync there too.
+      - HERMES_API_TIMEOUT=300
+      - HERMES_API_CALL_STALE_TIMEOUT=120
       # To expose the OpenAI-compatible API server beyond localhost,
       # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
       # - API_SERVER_HOST=0.0.0.0

@@ -153,8 +153,12 @@ HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state all --limit 
   --json number,title,state,stateReason > "$DECIDE_DIR/existing-issues.json" 2>/dev/null \
   || echo "[]" > "$DECIDE_DIR/existing-issues.json"
 
+# Wall-clock cap so a hung model call in the decide step can't stall the run
+# (SIGTERM then SIGKILL — same rationale as argus-test's session timeout).
+FILER_TIMEOUT="${FILER_TIMEOUT:-1200}"
 # shellcheck disable=SC2086
-argus chat --max-turns 80 -t file \
+timeout --signal=TERM --kill-after=30 "$FILER_TIMEOUT" \
+  argus chat --max-turns 80 -t file \
   -q "You are triaging QA bugs for GitHub filing. You do NOT touch GitHub — you only read files and WRITE decision files. A later step does the actual filing.
 
 Step 1 — read the bug report at ${FILER_REPORT} with read_file. Each bug is a '## ' section.
