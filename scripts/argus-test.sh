@@ -301,6 +301,13 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
   PREV_BUGS="$CUR_BUGS"
 done
 
+# ── From here down is best-effort bookkeeping (hygiene, stamp, assemble,
+# file). Disable errexit for it: a single non-zero return (a grep that
+# matches nothing, an awk exit code, a gh hiccup) must NOT abort the run and
+# leave bugs unassembled / the area unstamped. This set-e-kills-post-run class
+# of bug has bitten three times; stop fighting it line-by-line.
+set +e
+
 # If the model never wrote summary.md (converged or hit the nudge cap),
 # synthesise one so the report assembles and the completion state is explicit.
 if [[ ! -f "$RUN_DIR/summary.md" ]]; then
