@@ -89,13 +89,16 @@ ARTIFACTS_REPO="${ARTIFACTS_REPO:-remundo-xml/argus-artifacts}"
 ARTIFACTS_TOKEN="$(grep -E '^ARGUS_ARTIFACTS_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 
 FILER_REPORT="$REPORT_FILE"
+# Upload screenshots and build a local-path → raw-URL map. The agent must NOT
+# carry the URL (it mangled one — dropped the /2026-06/ dir, 404). The decide
+# agent copies the stable LOCAL path; the execute loop swaps it for the real
+# URL deterministically (sed), so the embedded image is always correct.
+declare -A SHOT_URL=()
 mapfile -t SCREENSHOTS < <(grep -oE '/opt/data/reports/screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg)' "$REPORT_FILE" | sort -u)
 
 if [[ ${#SCREENSHOTS[@]} -gt 0 && -z "$ARTIFACTS_TOKEN" ]]; then
   echo "▶ Report references ${#SCREENSHOTS[@]} screenshot(s) but ARGUS_ARTIFACTS_TOKEN is not set — issues will be filed without images."
 elif [[ ${#SCREENSHOTS[@]} -gt 0 ]]; then
-  FILER_REPORT="/tmp/argus-report-for-filing.md"
-  cp "$REPORT_FILE" "$FILER_REPORT"
   uploaded=0
   for shot in "${SCREENSHOTS[@]}"; do
     [[ -f "$shot" ]] || { echo "  ⚠ referenced screenshot missing: $shot"; continue; }
@@ -124,7 +127,7 @@ print(f"upload failed: {last}", file=sys.stderr)
 sys.exit(1)
 PYEOF
 )" || { echo "  ⚠ upload failed for $shot — leaving local path"; continue; }
-    sed -i "s|$shot|$url|g" "$FILER_REPORT"
+    SHOT_URL["$shot"]="$url"
     uploaded=$((uploaded + 1))
   done
   echo "▶ Uploaded $uploaded/${#SCREENSHOTS[@]} screenshot(s) to $ARTIFACTS_REPO"
@@ -176,7 +179,7 @@ Step 4 — for each bug you decide to FILE, write ${DECIDE_DIR}/file-NN.md (NN =
 TITLE: <short factual title, no prefixes/tags>
 SECURITY: <yes if XSS/injection/auth-bypass, else no>
 ---
-<issue body: the bug's URL, steps to reproduce, expected, actual, severity — copied from the report. If the section has a 'Screenshot:' line with an https URL, include the image with ![screenshot](<url>).>
+<issue body: the bug's URL, steps to reproduce, expected, actual, severity — copied from the report. If the section has a 'Screenshot:' line, copy that line VERBATIM keeping the exact /opt/data/reports/screenshots/<name>.png path — do NOT turn it into a URL or change the filename; a later step replaces it with the rendered image.>
 
 Step 5 — write ${DECIDE_DIR}/_summary.md: a '## Filed issues' list (one line per bug you chose to FILE, by title) and a '## Skipped' list (each skipped bug + the reason / duplicate #number).
 
@@ -214,6 +217,12 @@ for df in "$DECIDE_DIR"/file-*.md; do
   body_file="$df.body"
   awk 'p{print} /^---/{p=1}' "$df" > "$body_file"
   [[ -n "$title" && -s "$body_file" ]] || { echo "  ⚠ skipping malformed decision file $df"; continue; }
+  # Deterministically turn any local screenshot path the agent copied into the
+  # rendered image (# delimiter — paths contain / but not #). The agent never
+  # constructs the URL, so it can't mangle it.
+  for shot in "${!SHOT_URL[@]}"; do
+    sed -i "s#^Screenshot:[[:space:]]*${shot}[[:space:]]*\$#![screenshot](${SHOT_URL[$shot]})#; s#${shot}#${SHOT_URL[$shot]}#g" "$body_file"
+  done
   if [[ -n "${EXISTING_NORM["$(norm "$title")"]:-}" ]]; then
     echo "  = skip (title already exists): $title"
     continue
