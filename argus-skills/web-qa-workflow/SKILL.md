@@ -37,20 +37,20 @@ summary: How to explore a web app, what counts as a bug, and how to report findi
 - Use the console to *inspect* and to work around known SPA event quirks — not to bypass the UI.
   Submitting data by calling the backend API directly is never a valid test.
 
-## Testing form fields on a Svelte SPA (avoid false positives)
+## Testing form fields (avoid false positives)
 
-This site is a Svelte SPA where typing does not always register with the
-framework's state. Before you report that a field "doesn't save", "clears
-itself", or "won't persist", rule out your own input method first:
+`browser_type` types like a real user — it fires the input events the page's
+framework needs, so values DO register. `browser_click` and `browser_type`
+work normally here; you do NOT need raw `dispatchEvent` JavaScript to interact.
+Before reporting that a field "doesn't save", "clears itself", or "won't
+persist", rule out the mundane causes first:
 
-1. After typing, re-read the field's value AND confirm the framework saw it —
-   a value that shows in the DOM but not after a save may mean your keystrokes
-   never fired Svelte's `input` event.
-2. If a typed value seems not to take, set it via the dispatchEvent pattern
-   (`el.value = '...'; el.dispatchEvent(new Event('input', {bubbles:true}))`)
-   and try again. Only if it STILL fails with proper events is it a real bug.
-3. "Typed value doesn't persist" is far more often a test-harness artifact than
-   a site bug. Treat it as suspect until you've confirmed input reached state.
+1. Make sure the field was actually focused/filled — re-snapshot and read its
+   value back after typing.
+2. If a value didn't take, the field may have been off-screen or not focused
+   when you typed. Re-snapshot (refs go stale), then type again.
+3. "Typed value doesn't persist" is more often a test-interaction issue than a
+   site bug. Confirm the value really reached the field before reporting it.
 
 Use **valid, well-formed test data** for the happy path, and only deliberately
 malformed data when you are specifically testing validation. A field correctly

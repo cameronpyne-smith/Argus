@@ -2471,6 +2471,16 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
+    # Scroll the element into view before clicking. The click is coordinate
+    # based, so an element below the fold (or scrolled off) would be clicked
+    # at off-screen coordinates and silently miss. The tall viewport set in
+    # browser_navigate covers most cases; this covers genuinely long pages.
+    # Best-effort — never let a scroll hiccup block the click.
+    try:
+        _run_browser_command(effective_task_id, "scrollintoview", [ref], timeout=15)
+    except Exception:
+        pass
+
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):

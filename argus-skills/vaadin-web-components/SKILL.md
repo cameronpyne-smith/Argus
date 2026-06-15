@@ -2,31 +2,34 @@
 name: vaadin-web-components
 title: Vaadin Web Component Testing
 description: Patterns for testing every Vaadin component type via browser automation.
-summary: Browser automation patterns for Vaadin text fields, date-pickers, combo-boxes, selects, checkboxes, and grids. All use Shadow DOM or component-level APIs — never browser_click/browser_type directly on a Vaadin host element.
+summary: Browser automation patterns for Vaadin text fields, date-pickers, combo-boxes, selects, checkboxes, and grids — when a native browser_click/browser_type isn't enough, set the value via the component's own API.
 ---
 
 # Vaadin Web Component Testing
 
-## The Golden Rule
+## First: use the normal tools
 
-**Never use `browser_click` or `browser_type` directly on this SPA.**  
-Playwright's `browser_click @ref` sends a CDP-level synthetic click that does **not** trigger Svelte `on:click` event handlers. The click silently fires but nothing happens.
+`browser_click` and `browser_type` work on this site — they produce real
+events that the framework handles, and `browser_navigate` keeps the viewport
+tall enough that controls aren't clicked off-screen. **Always try a normal
+`browser_click` / `browser_type` first.** If a click seems to do nothing,
+re-snapshot (refs go stale) and retry before assuming anything is wrong.
 
-**Always use `browser_console` with `dispatchEvent` for every click interaction:**
+The patterns below are for the cases a normal interaction genuinely can't
+reach: a few Vaadin **custom web components** expose their value only through a
+component-level API (a `value-changed`/`change` event or a property setter),
+not a plain DOM input — so typing or clicking the visible element doesn't
+update the component's internal value. Reach for `browser_console` only then.
+
+To click an element by its visible label text (when you can't get a clean ref):
 ```javascript
-element.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}))
-```
-
-To click an element by its visible label text:
-```javascript
-// Find the clickable row for a field (e.g., "Start Date") and click it
 (function(label) {
   var el = [...document.querySelectorAll('*')].find(function(e) {
     return e.textContent.includes(label) &&
            getComputedStyle(e).cursor === 'pointer' &&
            e.querySelectorAll('vaadin-icon, img').length > 0;
   });
-  if (el) el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+  if (el) el.click();
   return el ? 'clicked' : 'not found';
 })('Start Date')
 ```
@@ -300,8 +303,8 @@ el.opened = true;
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `browser_type` reports success but value unchanged | Hit shadow host, not real input | Use Shadow DOM setter pattern above |
-| `browser_click` does nothing | Same — Shadow DOM | Use `dispatchEvent` on the element |
+| `browser_type` reports success but value unchanged | Typed the shadow host, not the real input inside it | Use the Shadow DOM setter pattern above |
+| `browser_click` seems to do nothing | Stale ref, or the click reached the host not the control | Re-snapshot and retry browser_click; only use the component API if it still won't update |
 | `value-changed` event doesn't stick | Component not connected to reactive state | Also dispatch `change` — Svelte listens to both |
 | Combo-box item not found | Dropdown not opened yet | Set `el.opened = true` first, snapshot, then click item |
 | Date-picker value not accepted | Wrong format | Must be `YYYY-MM-DD` ISO string |

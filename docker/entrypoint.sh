@@ -144,6 +144,10 @@ rm -rf "$HERMES_HOME/skills/qa"
 # qa-notes/<site>/ (index.md + per-area files). Remove stale flat copies so
 # the agent can't load outdated page instructions.
 rm -rf "$HERMES_HOME/skills/main-terms" "$HERMES_HOME/skills/expenses" "$HERMES_HOME/skills/hire-worker-wizard"
+# svelte-spa-testing retired: its premise ("Svelte filters synthetic clicks,
+# use dispatchEvent") was false — clicks failed because elements were below
+# the fold (short viewport), now fixed in browser_navigate + scrollintoview.
+rm -rf "$HERMES_HOME/skills/svelte-spa-testing"
 
 # Working directories for QA runs: durable bug reports (+ per-bug screenshots)
 # and per-site notes the agent reads/updates across runs so it can vary
