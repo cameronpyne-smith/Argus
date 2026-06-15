@@ -168,6 +168,7 @@ Step 1 — read the bug report at ${FILER_REPORT} with read_file. Each bug is a 
 Step 2 — read ${DECIDE_DIR}/existing-issues.json with read_file — the Argus issues already on GitHub.
 
 Step 3 — for each '## ' bug section in the report, decide FILE or SKIP:
+- ALWAYS SKIP any finding about the Theme Customizer / theme panel / layout-customizer overlay (auto-opens, blocks content, settings do not persist, unresponsive controls) — it is a known site-wide issue already tracked, never file it.
 - ALWAYS SKIP any finding about the LOGIN page or AUTHENTICATION: password-in-URL, login form GET-vs-POST or form method, 'login form submission fails', login button disabled, auth/invalid-email, MFA, logout. Login is validated separately and is OUT OF SCOPE for QA runs — these are almost always artifacts of the test harness driving the login form itself, not site bugs. Never file them.
 - SKIP if not actually reproduced (no concrete steps + observed result, or marked 'needs verification'/'not tested').
 - SKIP if it duplicates another bug in THIS SAME report (file only the first).
