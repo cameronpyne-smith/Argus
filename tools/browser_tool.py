@@ -2259,6 +2259,23 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
     result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
 
+    # Ensure a tall enough viewport. The default headless viewport (~1280x577)
+    # is short enough that controls below the fold — e.g. a login submit button
+    # at y~625 in a fixed-height layout that doesn't window-scroll — sit
+    # OFF-SCREEN. Coordinate-based clicks then land on nothing and silently miss
+    # the element (elementFromPoint at its centre returns null), which was long
+    # misdiagnosed as "Svelte filters synthetic clicks" and worked around with
+    # dispatchEvent. A taller viewport keeps such controls on-screen so native
+    # browser_click/browser_type work directly. Best-effort, idempotent, and
+    # re-applied each nav so a reaper-recreated session is covered too.
+    if result.get("success"):
+        _vp_w = os.environ.get("ARGUS_BROWSER_VIEWPORT_W", "1280")
+        _vp_h = os.environ.get("ARGUS_BROWSER_VIEWPORT_H", "1080")
+        try:
+            _run_browser_command(nav_session_key, "set", ["viewport", _vp_w, _vp_h], timeout=15)
+        except Exception:
+            pass
+
     # Remember which session served this nav so snapshot/click/fill/...
     # on the same task_id hit it (critical when hybrid routing has both a
     # cloud session and a local sidecar alive concurrently).
