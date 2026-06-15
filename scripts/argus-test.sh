@@ -38,6 +38,7 @@ PROVIDER_FLAGS=""
 # assembles/files whatever bugs were recorded. Override with SESSION_TIMEOUT.
 SESSION_TIMEOUT="${SESSION_TIMEOUT:-2400}"
 DISCOVER=false
+RECORD=false
 # Issue filing default comes from ARGUS_FILE_ISSUES in /opt/data/.env;
 # --issues / --no-issues override per run. Report is always written.
 FILE_ISSUES="$(grep -E '^ARGUS_FILE_ISSUES=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
@@ -60,6 +61,8 @@ while [[ $# -gt 0 ]]; do
       PERSONA="$2"; shift 2 ;;
     --discover)
       DISCOVER=true; shift ;;
+    --record)
+      RECORD=true; shift ;;
     --issues)
       FILE_ISSUES=true; shift ;;
     --no-issues)
@@ -80,6 +83,24 @@ if [[ -n "$PROVIDER_FLAGS" ]]; then
     exit 1
   fi
   echo "  ✓ Ollama is up"
+fi
+
+# ── Browser recording (opt-in --record) ───────────────────────────────────
+# browser_tool reads browser.record_sessions from config.yaml, so enable it
+# there for the duration of this run. NB: each browser session (the main run
+# AND every babysitter --continue) records to its OWN .webm — a run yields a
+# folder of per-session clips, not one continuous video. Reset on EXIT (even
+# on kill) so normal runs stay un-recorded.
+RECORDINGS_DIR="/opt/data/browser_recordings"
+CONFIG_YAML="/opt/data/config.yaml"
+if [[ "$RECORD" == "true" ]]; then
+  if grep -qE '^\s*record_sessions:' "$CONFIG_YAML"; then
+    sed -i 's/^\(\s*record_sessions:\s*\).*/\1true/' "$CONFIG_YAML"
+  else
+    sed -i 's/^\(browser:\s*\)$/\1\n  record_sessions: true/' "$CONFIG_YAML"
+  fi
+  trap 'sed -i "s/^\(\s*record_sessions:\s*\).*/\1false/" "$CONFIG_YAML" 2>/dev/null || true' EXIT
+  echo "▶ Recording ENABLED — per-session .webm clips will land in ${RECORDINGS_DIR}"
 fi
 
 mkdir -p "$SITE_DIR" /opt/data/reports/screenshots /opt/data/reports/parts
@@ -458,4 +479,15 @@ elif [[ "$FILE_ISSUES" == "true" ]]; then
   echo "✗ Issue filing enabled but no report file exists — nothing to file."
 else
   echo "▶ Issue filing is off (enable with --issues or ARGUS_FILE_ISSUES=true) — report only."
+fi
+
+# ── Recording summary (opt-in --record) ───────────────────────────────────
+if [[ "$RECORD" == "true" ]]; then
+  echo ""
+  if ls "$RECORDINGS_DIR"/*.webm >/dev/null 2>&1; then
+    echo "▶ Browser recordings for this run (one .webm per session) in ${RECORDINGS_DIR}:"
+    ls -t "$RECORDINGS_DIR"/*.webm | head -10 | sed 's#^#    #'
+  else
+    echo "▶ Recording was enabled but no .webm files were produced in ${RECORDINGS_DIR}."
+  fi
 fi
