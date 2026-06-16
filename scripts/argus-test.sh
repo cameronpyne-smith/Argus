@@ -14,6 +14,15 @@
 #   argus-test --focus expenses --persona default --local --issues
 #   argus-test --discover --local   # map the site: fill the index, no testing
 #
+# Prerequisite for --local (host-side, one-time): Ollama's /v1 endpoint ignores
+# per-request num_ctx, so --local uses a model variant with the context window
+# baked into its Modelfile. Create them once (they share blobs with the base):
+#   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 131072\n' | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus128k -f /tmp/mf
+#   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 65536\n'  | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus64k  -f /tmp/mf
+# If host Ollama models are reset, recreate these or runs fall back to 32K.
+# Keep the variant's num_ctx coherent with ARGUS_NUM_CTX + ARGUS_LOCAL_MODEL
+# (entrypoint.sh): context_length and the vision aux model must match the variant.
+#
 set -euo pipefail
 
 SITE="remundo"
