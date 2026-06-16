@@ -179,7 +179,7 @@ content = re.sub(r'^(\s+tool_use_enforcement:\s*).*$', r'\g<1>true', content, fl
 #        q8_0, OLLAMA_FLASH_ATTENTION=1) or it OOMs/offloads to RAM.
 # num_ctx (Ollama's real window), context_length (Hermes' belief) and the
 # compression trigger MUST agree — a mismatch silently truncates every request.
-NUM_CTX = int(os.environ.get("ARGUS_NUM_CTX", "65536"))
+NUM_CTX = int(os.environ.get("ARGUS_NUM_CTX", "131072"))
 
 def set_or_insert_model_key(content, key, value):
     if re.search(rf'^\s+{key}:', content, flags=re.MULTILINE):
@@ -236,7 +236,7 @@ else:
 # NOTE: must keep the LOCAL Ollama endpoint here — clearing base_url makes the
 # aux inherit the model-block default (api.openai.com) and every vision call
 # 404s. Keep this model name in sync with argus-test's --local model.
-_VISION_MODEL = os.environ.get("ARGUS_LOCAL_MODEL", "qwen3.6-argus64k")
+_VISION_MODEL = os.environ.get("ARGUS_LOCAL_MODEL", "qwen3.6-argus128k")
 def _patch_vision(c):
     def repl(m):
         b = m.group(0)

@@ -47,11 +47,12 @@ FILE_ISSUES="${FILE_ISSUES:-false}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      # qwen3.6-argus64k = qwen3.6:35b with PARAMETER num_ctx 65536 baked in.
+      # qwen3.6-argus128k = qwen3.6:35b with PARAMETER num_ctx 131072 baked in.
       # Ollama's /v1 (OpenAI-compat) endpoint IGNORES per-request num_ctx, so the
       # ONLY way to run >32768 (Ollama's /v1 default) is a model whose Modelfile
-      # bakes num_ctx. Keep this in sync with context_length (entrypoint patch).
-      PROVIDER_FLAGS="--provider local -m qwen3.6-argus64k"
+      # bakes num_ctx. Keep this in sync with context_length (entrypoint
+      # ARGUS_NUM_CTX) and the vision model (entrypoint ARGUS_LOCAL_MODEL).
+      PROVIDER_FLAGS="--provider local -m qwen3.6-argus128k"
       shift ;;
     --model)
       # local ollama model override, e.g. --model qwen3.6:35b
