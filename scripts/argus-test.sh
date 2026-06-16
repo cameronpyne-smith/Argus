@@ -47,7 +47,11 @@ FILE_ISSUES="${FILE_ISSUES:-false}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      PROVIDER_FLAGS="--provider local -m qwen3.6:35b"
+      # qwen3.6-argus64k = qwen3.6:35b with PARAMETER num_ctx 65536 baked in.
+      # Ollama's /v1 (OpenAI-compat) endpoint IGNORES per-request num_ctx, so the
+      # ONLY way to run >32768 (Ollama's /v1 default) is a model whose Modelfile
+      # bakes num_ctx. Keep this in sync with context_length (entrypoint patch).
+      PROVIDER_FLAGS="--provider local -m qwen3.6-argus64k"
       shift ;;
     --model)
       # local ollama model override, e.g. --model qwen3.6:35b
@@ -157,21 +161,31 @@ STAMP="$(date +%Y%m%d-%H%M)"
 REPORT_FILE="/opt/data/reports/${AREA}-${STAMP}.md"
 ARCHIVE_DIR="/opt/data/reports/parts/${AREA}-${STAMP}"
 
-# Login instructions are inlined VERBATIM into the goal prompt. Models keep
-# improvising broken login JS (missing input-event dispatches) when asked to
-# reproduce the snippet from a skill loaded many turns earlier — inline text
-# in the protected first message gets copied faithfully.
-LOGIN_JS="$(cat "/opt/data/skills/site-config/login-${PERSONA}.js" 2>/dev/null || true)"
-MFA_JS="$(cat /opt/data/skills/site-config/mfa-skip.js 2>/dev/null || true)"
-if [[ -n "$LOGIN_JS" ]]; then
-  LOGIN_STEP="Log in: navigate to https://${SITE_HOST}/login, then run EXACTLY this JavaScript with browser_console — copy it character for character, never write your own login code:
-${LOGIN_JS}
-Wait 5 seconds and check the URL. If it is /mfa-setup, run this with browser_console:
-${MFA_JS}
-Confirm the URL is no longer /login or /mfa-setup before continuing. If login shows 'Email/password incorrect', re-run the exact same snippet once — do not try other credentials or login methods."
+# Login is a GENERIC form-login procedure (in the web-qa-workflow skill), not a
+# site-specific script: drive whatever sign-in page the site has with the normal
+# browser_type/browser_click tools. Only the DATA is site-specific — the login
+# URL and the persona's credentials — and that lives in site-config. We parse the
+# persona's credentials out of site-config and inline them as data into the
+# protected first message so context compression can never strip them; the
+# procedure itself the model follows from the skill. (We used to inline a raw-JS
+# dispatchEvent snippet here — models under context pressure regenerated it from
+# memory and broke it, which is what wedged runs on /login. Native tools log in
+# reliably as long as the model snapshots before acting and verifies the value.)
+SITE_CONFIG="/opt/data/skills/site-config/SKILL.md"
+LOGIN_EMAIL="$(awk -v p="$PERSONA" '
+  tolower($0) ~ ("^### persona: " tolower(p) "$") {f=1; next}
+  /^### / {f=0}
+  f && /^- *Email:/ {sub(/^- *Email:[ \t]*/,""); gsub(/[ \t]+$/,""); print; exit}' "$SITE_CONFIG" 2>/dev/null || true)"
+LOGIN_PW="$(awk -v p="$PERSONA" '
+  tolower($0) ~ ("^### persona: " tolower(p) "$") {f=1; next}
+  /^### / {f=0}
+  f && /^- *Password:/ {sub(/^- *Password:[ \t]*/,""); gsub(/[ \t]+$/,""); print; exit}' "$SITE_CONFIG" 2>/dev/null || true)"
+if [[ -n "$LOGIN_EMAIL" && -n "$LOGIN_PW" ]]; then
+  CRED_LINE="Use ONLY these credentials (never invent or substitute any): email '${LOGIN_EMAIL}', password '${LOGIN_PW}'."
 else
-  LOGIN_STEP="Log in as persona '${PERSONA}' using the credentials and login method in site-config"
+  CRED_LINE="Use ONLY the persona '${PERSONA}' credentials from the site-config skill — never invent or substitute any."
 fi
+LOGIN_STEP="Log in to https://${SITE_HOST} as persona '${PERSONA}' before testing, following the 'Logging in' procedure in the web-qa-workflow skill. ${CRED_LINE} In short: open the site's login page, browser_snapshot it, browser_type the email and password into their fields, read each value back to confirm it stuck (if a field is empty your ref went stale — re-snapshot and type again), browser_click the submit button, then confirm the URL has left the login page. If you land on a setup/MFA/consent interstitial that is not the app itself, click its skip / later / dismiss control. These credentials are valid, so a 'sign-in failed' message means the value did not register (stale ref) — re-snapshot and retype; never try other credentials or other login methods, and never file the login flow as a bug."
 
 # ── Run dir: ALL agent file IO happens in /opt/data/run — one short path the
 # model can reliably retain under context compression.
@@ -242,7 +256,7 @@ Before you start:
 
 Rules:
 - Test through the browser UI only, like a real user. Never call the backend API directly, and only use the persona '${PERSONA}' credentials from site-config.
-- You are testing the '${AREA}' area, NOT the login flow. Do not test, re-submit, or 'verify' the login form, and never log out. If you get redirected to /login mid-run, just re-run the EXACT login snippet from site-config to get back in — that is routine, not a bug, and never file it as one.
+- You are testing the '${AREA}' area, NOT the login flow. Do not test, re-submit, or 'verify' the login form, and never log out. If you get redirected to /login mid-run, just repeat the login procedure (snapshot, type the same credentials, submit) to get back in — that is routine, not a bug, and never file it as one.
 - NEVER type credentials you made up. The only valid login is the exact email+password in site-config. A login that rejects any other credentials is working correctly — not a bug.
 - The ONLY valid site domain is https://${SITE_HOST} — if you remember any other domain, it is wrong.
 - Do not ask for direction. If something does not work, try a different approach on your own.

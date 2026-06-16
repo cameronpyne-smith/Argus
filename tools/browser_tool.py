@@ -2523,6 +2523,43 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
     if result.get("success"):
+        # Verify the text actually landed. agent-browser's `fill` reports
+        # success even when the ref is stale (refs are assigned per-snapshot
+        # and silently go stale after any DOM change) — the field stays empty
+        # and NO error is raised. That silent no-op is the single biggest
+        # source of phantom "field won't save / login is stuck" findings:
+        # the model builds on a fake success and spirals. Read the value back;
+        # if we typed non-empty text but the field is still empty, the ref was
+        # stale — surface it as an actionable error so the model re-snapshots.
+        # Conservative on purpose: only an EMPTY read-back is treated as a
+        # no-op (a non-empty but transformed value — masked phone, trimmed
+        # string — is accepted), and any failure to read back is ignored so
+        # verification can never break a genuinely successful type.
+        if text.strip():
+            try:
+                check = _run_browser_command(
+                    effective_task_id, "get", ["value", ref], timeout=10
+                )
+                if check.get("success"):
+                    got = check.get("data", {}).get("value")
+                    if isinstance(got, str) and got == "":
+                        response = {
+                            "success": False,
+                            "error": (
+                                f"Type had no effect — {ref} is still empty after "
+                                f"typing. The ref is almost certainly stale (refs "
+                                f"change after any page update). Take a fresh "
+                                f"browser_snapshot and use the NEW ref before typing "
+                                f"again. This is a tool/ref issue, not a site bug — "
+                                f"do not report it."
+                            ),
+                        }
+                        return json.dumps(
+                            _copy_fallback_warning(response, result),
+                            ensure_ascii=False,
+                        )
+            except Exception:
+                pass  # best-effort; never let verification fail a real type
         response = {
             "success": True,
             "typed": text,

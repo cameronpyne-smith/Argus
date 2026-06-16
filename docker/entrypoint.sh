@@ -92,15 +92,12 @@ if [ -f "$INSTALL_DIR/agent-config/site-config.md" ]; then
     mkdir -p "$HERMES_HOME/skills/site-config"
     cp "$INSTALL_DIR/agent-config/site-config.md" "$HERMES_HOME/skills/site-config/SKILL.md"
 fi
-# Per-persona login JS — argus-test inlines these verbatim into the goal
-# prompt; models keep improvising broken login JS when asked to reproduce
-# the snippet from a skill read many turns earlier.
-for js in "$INSTALL_DIR"/agent-config/*.js; do
-    if [ -f "$js" ]; then
-        mkdir -p "$HERMES_HOME/skills/site-config"
-        cp "$js" "$HERMES_HOME/skills/site-config/"
-    fi
-done
+# Login is now a generic browser_type/browser_click procedure (web-qa-workflow
+# skill); credentials are parsed from site-config and inlined by argus-test.
+# Purge any stale per-persona login JS / mfa-skip snippets left in the volume
+# from older images so the model can't fall back to brittle dispatchEvent code.
+rm -f "$HERMES_HOME"/skills/site-config/login-*.js \
+      "$HERMES_HOME"/skills/site-config/mfa-skip.js 2>/dev/null || true
 
 # QA skills — copy from argus-skills/ into flat skill directories so Hermes can
 # discover them. They live OUTSIDE skills/ on purpose: everything under skills/
@@ -176,7 +173,14 @@ content = re.sub(r'^(\s+tool_use_enforcement:\s*).*$', r'\g<1>true', content, fl
 # 64K — Ollama silently truncated every request past ~8K, so the model lost
 # its system prompt/goal/credentials mid-run and the prompt prefix cache
 # never hit (1-2s turns degraded to 100s+).
-# 32768 fits qwen3.5:35b Q4 (23GB) + KV cache on a 32GB GPU.
+# Context window is env-tunable via ARGUS_NUM_CTX (default 65536 = 64K).
+#   64K  fits qwen3.6:35b Q4 (23GB) + fp16 KV on a 32GB GPU (~29GB total).
+#   128K needs q8_0 KV + flash-attn ON the Ollama server (OLLAMA_KV_CACHE_TYPE=
+#        q8_0, OLLAMA_FLASH_ATTENTION=1) or it OOMs/offloads to RAM.
+# num_ctx (Ollama's real window), context_length (Hermes' belief) and the
+# compression trigger MUST agree — a mismatch silently truncates every request.
+NUM_CTX = int(os.environ.get("ARGUS_NUM_CTX", "65536"))
+
 def set_or_insert_model_key(content, key, value):
     if re.search(rf'^\s+{key}:', content, flags=re.MULTILINE):
         return re.sub(rf'^(\s+{key}:\s*).*$', rf'\g<1>{value}', content, flags=re.MULTILINE)
@@ -186,8 +190,8 @@ def set_or_insert_model_key(content, key, value):
         content, flags=re.MULTILINE
     )
 
-content = set_or_insert_model_key(content, 'ollama_num_ctx', 32768)
-content = set_or_insert_model_key(content, 'context_length', 32768)
+content = set_or_insert_model_key(content, 'ollama_num_ctx', NUM_CTX)
+content = set_or_insert_model_key(content, 'context_length', NUM_CTX)
 
 # Compress at 60% of 32K (~19.6K tokens) so requests never reach the real
 # window even with skills + snapshots in flight. Anchor to the compression

@@ -73,6 +73,36 @@ Only ever use the credentials provided in the site-config skill. Never invent, g
 or reuse credentials from anywhere else, and never try to register new accounts unless
 the task explicitly asks for it.
 
+## Logging in
+
+A sign-in page is just a form — drive it with the normal tools, never custom
+JavaScript. This procedure is generic; the login URL and credentials come from
+site-config (or your task). If a run starts unauthenticated, or testing
+redirects you to a sign-in page:
+
+1. **Navigate** to the login URL from site-config.
+2. **Snapshot**, then find the **username/email** field, the **password** field,
+   and the **submit** button by their role/label. `browser_type` the credentials
+   into the two fields — `browser_type` fires the input events the page's
+   framework needs, so you never need raw `dispatchEvent`.
+3. **Verify the values stuck.** Read each field back (re-snapshot, or read its
+   value). If a field is still empty after typing, your ref was stale — refs
+   change after any page update. Re-snapshot and type into the NEW ref. A field
+   that "won't accept input" is almost always a stale ref, not a bug.
+4. **Submit** — `browser_click` the login button — then wait a couple of seconds
+   and check the URL. If you are **no longer on the sign-in page**, you are in.
+5. **Post-login interstitial.** If login lands on a setup / MFA / consent page
+   that is not the app itself, find a **skip / later / dismiss / not now**
+   control and click it. If there is genuinely no way past it, that is a real
+   finding — record it and stop.
+6. **If you are still on the sign-in page with no error**, re-snapshot and retry
+   once (stale ref). If the credentials are explicitly **rejected**, that is the
+   form working correctly for wrong input — never invent other credentials, and
+   never file the login flow itself as a bug.
+
+This covers standard form logins. SSO / passkey / captcha flows are out of scope
+unless the task says otherwise.
+
 ## What Counts as a Bug
 
 - A field accepts and saves clearly invalid data (XSS string, negative salary)
