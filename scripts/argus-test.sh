@@ -23,8 +23,10 @@
 # Keep the variant's num_ctx coherent with ARGUS_NUM_CTX (entrypoint sets
 # context_length to match the variant, else Hermes over-fills and Ollama truncates).
 #
-# Vision aux is configured independently via three env vars (entrypoint.sh):
+# Vision aux is configured independently via three settings (put them in the
+# settings file ~/.argus/.env, which the entrypoint loads on every start):
 #   ARGUS_VISION_MODEL / ARGUS_VISION_BASE_URL / ARGUS_VISION_API_KEY
+# (ARGUS_NUM_CTX and ARGUS_LOCAL_MODEL live there too.)
 # Default = the local model on local Ollama (shares the resident model, no swap).
 # On a cloud/OpenAI box with no Ollama: run WITHOUT --local (main -> gpt-4.1 via
 # the config default) and set the three vision env vars to your provider, e.g.

@@ -5,6 +5,22 @@ set -e
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# Settings file: load the volume's .env into the entrypoint environment so
+# operator knobs (ARGUS_VISION_MODEL/_BASE_URL/_API_KEY, ARGUS_NUM_CTX,
+# ARGUS_LOCAL_MODEL, ...) drive the config patches below — not just Hermes'
+# runtime dotenv. Read on EVERY container start (incl. `docker restart`), unlike
+# docker-compose env_file which only applies on create. .env wins over compose
+# env, matching Hermes' own dotenv override. Values are assigned literally (no
+# shell evaluation), so tokens with special chars are safe.
+if [ -f "$HERMES_HOME/.env" ]; then
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in
+            ''|\#*) ;;
+            *=*) export "${_line%%=*}=${_line#*=}" ;;
+        esac
+    done < "$HERMES_HOME/.env"
+fi
+
 # --- Privilege dropping via gosu ---
 # When started as root (the default for Docker, or fakeroot in rootless Podman),
 # optionally remap the hermes user/group to match host-side ownership, fix volume
