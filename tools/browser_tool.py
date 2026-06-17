@@ -1750,6 +1750,13 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _argus_headed() -> bool:
+    """Watch mode: render the browser to a real display and type with visible
+    keystrokes. Enabled by ARGUS_HEADED=1 (set in the ~/.argus/.env settings
+    file). Off by default so normal runs stay headless and fast."""
+    return os.environ.get("ARGUS_HEADED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
@@ -1918,6 +1925,12 @@ def _run_browser_command(
                 browser_env["AGENT_BROWSER_ARGS"] = (
                     "--no-sandbox,--disable-dev-shm-usage"
                 )
+
+        # Headed mode for live watching: render Chromium to a real display
+        # (DISPLAY is inherited from the container env — Option 1 shares the
+        # host X server). Gated on ARGUS_HEADED so normal runs stay headless.
+        if _argus_headed():
+            browser_env["AGENT_BROWSER_HEADED"] = "true"
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
@@ -2519,8 +2532,14 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
-    # Use fill command (clears then types)
-    result = _run_browser_command(effective_task_id, "fill", [ref, text])
+    # Normally use `fill` (clears + sets the value in one shot — fast, headless).
+    # In watch mode, type with real keystrokes so you can see characters land:
+    # `fill` to "" clears instantly, then `type` replays the text key-by-key.
+    if _argus_headed() and text:
+        _run_browser_command(effective_task_id, "fill", [ref, ""])
+        result = _run_browser_command(effective_task_id, "type", [ref, text])
+    else:
+        result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
     if result.get("success"):
         # Verify the text actually landed. agent-browser's `fill` reports

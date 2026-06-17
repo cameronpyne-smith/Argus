@@ -30,9 +30,16 @@ services:
     network_mode: host
     volumes:
       - ~/.argus:/opt/data
+      # Watch mode (ARGUS_HEADED=1): share the host X socket so a headed
+      # Chromium renders to the host desktop. Harmless when headless. Requires
+      # `xhost +local:` on the host once per login session.
+      - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
+      # Display for headed/watch mode (Option 1). Uses the invoking shell's
+      # DISPLAY, falling back to :1 (this host). Ignored when ARGUS_HEADED unset.
+      - DISPLAY=${DISPLAY:-:1}
       # QA runs on a local model can have slow turns; don't let the browser
       # session reaper kill the page state between model calls.
       - BROWSER_INACTIVITY_TIMEOUT=600

@@ -13,6 +13,8 @@
 #   argus-test expenses             # focus a specific area
 #   argus-test --focus expenses --persona default --local --issues
 #   argus-test --discover --local   # map the site: fill the index, no testing
+#   argus-test expenses --local --watch  # headed: watch it live in a browser window
+#                                          (Option 1: shares host X; run `xhost +local:` first)
 #
 # Prerequisite for --local (host-side, one-time): Ollama's /v1 endpoint ignores
 # per-request num_ctx, so --local uses a model variant with the context window
@@ -88,6 +90,11 @@ while [[ $# -gt 0 ]]; do
       DISCOVER=true; shift ;;
     --record)
       RECORD=true; shift ;;
+    --watch)
+      # Headed/watch mode: render the browser to the shared host X display so
+      # you can watch it click and type live. Per-run; needs `xhost +local:` on
+      # the host. (ARGUS_HEADED=1 in ~/.argus/.env makes it always-on instead.)
+      export ARGUS_HEADED=true; shift ;;
     --issues)
       FILE_ISSUES=true; shift ;;
     --no-issues)
