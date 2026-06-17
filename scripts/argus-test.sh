@@ -20,8 +20,17 @@
 #   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 131072\n' | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus128k -f /tmp/mf
 #   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 65536\n'  | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus64k  -f /tmp/mf
 # If host Ollama models are reset, recreate these or runs fall back to 32K.
-# Keep the variant's num_ctx coherent with ARGUS_NUM_CTX + ARGUS_LOCAL_MODEL
-# (entrypoint.sh): context_length and the vision aux model must match the variant.
+# Keep the variant's num_ctx coherent with ARGUS_NUM_CTX (entrypoint sets
+# context_length to match the variant, else Hermes over-fills and Ollama truncates).
+#
+# Vision aux is configured independently via three env vars (entrypoint.sh):
+#   ARGUS_VISION_MODEL / ARGUS_VISION_BASE_URL / ARGUS_VISION_API_KEY
+# Default = the local model on local Ollama (shares the resident model, no swap).
+# On a cloud/OpenAI box with no Ollama: run WITHOUT --local (main -> gpt-4.1 via
+# the config default) and set the three vision env vars to your provider, e.g.
+#   ARGUS_VISION_MODEL=gpt-4.1  ARGUS_VISION_BASE_URL=https://api.openai.com/v1  ARGUS_VISION_API_KEY=sk-...
+# (gpt-4.1/4o are multimodal, so vision is real). Also ensure the OpenAI key is in
+# config.yaml's OpenAI provider, since that's not committed.
 #
 set -euo pipefail
 

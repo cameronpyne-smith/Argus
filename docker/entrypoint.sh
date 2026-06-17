@@ -228,21 +228,26 @@ if re.search(r'^\s+env_passthrough:', content, flags=re.MULTILINE):
 else:
     content = re.sub(r'^(terminal:\n)', r'\g<1>  env_passthrough: ["GH_TOKEN"]\n', content, flags=re.MULTILINE)
 
-# Vision auxiliary must point at the SAME local model the QA run uses, so only
-# ONE model is resident. It previously used a separate qwen3.5:35b — a second
-# ~27GB model can't coexist with the main model in 32GB VRAM, so every
-# browser_vision forced a full model swap (a big per-run latency tax), and
-# neither qwen3 build is even multimodal so the separate model bought nothing.
-# NOTE: must keep the LOCAL Ollama endpoint here — clearing base_url makes the
-# aux inherit the model-block default (api.openai.com) and every vision call
-# 404s. Keep this model name in sync with argus-test's --local model.
-_VISION_MODEL = os.environ.get("ARGUS_LOCAL_MODEL", "qwen3.6-argus128k")
+# Vision auxiliary endpoint — explicitly configured (model + base_url + api_key)
+# so vision works wherever the box runs. Defaults match the local --local model
+# on the local Ollama endpoint, so screenshots share the one resident model
+# (no ~27GB swap) and this machine is unchanged. On a cloud/OpenAI box with no
+# Ollama, override the trio so vision uses a real multimodal model, e.g.:
+#   ARGUS_VISION_MODEL=gpt-4.1
+#   ARGUS_VISION_BASE_URL=https://api.openai.com/v1
+#   ARGUS_VISION_API_KEY=sk-...
+# (gpt-4.1/4o are genuinely multimodal — real vision, not qwen's marginal output.)
+# NOTE: do NOT leave base_url empty hoping to "inherit" — the aux then falls back
+# to the model-block default and mis-routes; always set the endpoint explicitly.
+_VISION_MODEL    = os.environ.get("ARGUS_VISION_MODEL", os.environ.get("ARGUS_LOCAL_MODEL", "qwen3.6-argus128k"))
+_VISION_BASE_URL = os.environ.get("ARGUS_VISION_BASE_URL", "http://localhost:11434/v1")
+_VISION_API_KEY  = os.environ.get("ARGUS_VISION_API_KEY", "ollama")
 def _patch_vision(c):
     def repl(m):
         b = m.group(0)
-        b = re.sub(r'^(    api_key:).*$',  r"\1 ollama", b, flags=re.MULTILINE)
-        b = re.sub(r'^(    base_url:).*$', r"\1 http://localhost:11434/v1", b, flags=re.MULTILINE)
-        b = re.sub(r'^(    model:).*$',    rf"\1 {_VISION_MODEL}", b, flags=re.MULTILINE)
+        b = re.sub(r'^(    api_key:).*$',  lambda _: "    api_key: "  + _VISION_API_KEY,  b, flags=re.MULTILINE)
+        b = re.sub(r'^(    base_url:).*$', lambda _: "    base_url: " + _VISION_BASE_URL, b, flags=re.MULTILINE)
+        b = re.sub(r'^(    model:).*$',    lambda _: "    model: "    + _VISION_MODEL,    b, flags=re.MULTILINE)
         b = re.sub(r'^(    provider:).*$', r'\1 custom', b, flags=re.MULTILINE)
         return b
     return re.sub(r'^  vision:\n(?:    .*\n)+', repl, c, flags=re.MULTILINE)
