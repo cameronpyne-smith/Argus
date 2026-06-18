@@ -20,18 +20,27 @@ class CustomProfile(ProviderProfile):
         *,
         reasoning_config: dict | None = None,
         ollama_num_ctx: int | None = None,
+        base_url: str | None = None,
         **ctx: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
 
-        # Ollama context window
-        if ollama_num_ctx:
+        # `options` (num_ctx) and `think` are Ollama-native extensions: OpenAI's
+        # API (and other clouds) reject them with HTTP 400 "Unrecognized request
+        # argument". This "custom" profile is shared by local Ollama AND any
+        # OpenAI-compatible cloud registered as provider=custom (e.g. an OpenAI
+        # endpoint), so only emit the Ollama-isms when the endpoint is local.
+        from agent.model_metadata import is_local_endpoint
+        _local = bool(base_url) and is_local_endpoint(base_url)
+
+        # Ollama context window (local only)
+        if _local and ollama_num_ctx:
             options = extra_body.get("options", {})
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Disable thinking when reasoning is turned off
-        if reasoning_config and isinstance(reasoning_config, dict):
+        # Disable Ollama thinking when reasoning is turned off (local only)
+        if _local and reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:

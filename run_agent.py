@@ -2450,7 +2450,12 @@ class AIAgent:
         _ollama_num_ctx_override = None
         if isinstance(_model_cfg, dict):
             _ollama_num_ctx_override = _model_cfg.get("ollama_num_ctx")
-        if _ollama_num_ctx_override is not None:
+        # Only apply num_ctx for LOCAL Ollama endpoints. The config override is
+        # shared across providers (this fork runs both local qwen and cloud
+        # OpenAI from one config); sending Ollama's `options`/num_ctx to OpenAI
+        # makes its API reject the whole request ("Unrecognized request
+        # arguments supplied: options"). Gate the override to local endpoints.
+        if _ollama_num_ctx_override is not None and self.base_url and is_local_endpoint(self.base_url):
             try:
                 self._ollama_num_ctx = int(_ollama_num_ctx_override)
             except (TypeError, ValueError):
