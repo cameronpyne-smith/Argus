@@ -15,6 +15,11 @@
 #   argus-test --discover --local   # map the site: fill the index, no testing
 #   argus-test expenses --local --watch  # headed: watch it live in a browser window
 #                                          (Option 1: shares host X; run `xhost +local:` first)
+#   argus-test expenses --prompt "test price fields for invalid chars + limits"
+#                                          # broad testing, but prioritise this instruction
+#   argus-test expenses --only   "test price fields for invalid chars + limits"
+#                                          # test ONLY this (ledger-neutral; no area.md/stamp update)
+#   (--prompt and --only are mutually exclusive and stay loaded in context all run.)
 #
 # Prerequisite for --local (host-side, one-time): Ollama's /v1 endpoint ignores
 # per-request num_ctx, so --local uses a model variant with the context window
@@ -45,6 +50,11 @@ INDEX="$SITE_DIR/index.md"
 RUN_DIR="/opt/data/run"
 
 FOCUS=""
+# Per-run guidance (--prompt / --only). GUIDE_TEXT is the user instruction;
+# GUIDE_MODE is "" (none), "prompt" (broad testing + prioritise it), or "only"
+# (test ONLY the instruction, ledger-neutral). The two are mutually exclusive.
+GUIDE_TEXT=""
+GUIDE_MODE=""
 PERSONA="candidate"
 # Sessions are deliberately SHORT (120 turns): the context compressor can
 # no-op on long agentic sessions and pin them at the 32K ceiling; every
@@ -95,6 +105,14 @@ while [[ $# -gt 0 ]]; do
       # you can watch it click and type live. Per-run; needs `xhost +local:` on
       # the host. (ARGUS_HEADED=1 in ~/.argus/.env makes it always-on instead.)
       export ARGUS_HEADED=true; shift ;;
+    --prompt)
+      # Extra guidance for this run: broad testing PLUS prioritise this.
+      if [[ -n "$GUIDE_MODE" ]]; then echo "✗ --prompt and --only are mutually exclusive — pass only one."; exit 1; fi
+      GUIDE_TEXT="$2"; GUIDE_MODE="prompt"; shift 2 ;;
+    --only)
+      # Focus this run EXCLUSIVELY on this instruction (skip the broad sweep).
+      if [[ -n "$GUIDE_MODE" ]]; then echo "✗ --prompt and --only are mutually exclusive — pass only one."; exit 1; fi
+      GUIDE_TEXT="$2"; GUIDE_MODE="only"; shift 2 ;;
     --issues)
       FILE_ISSUES=true; shift ;;
     --no-issues)
@@ -105,6 +123,32 @@ while [[ $# -gt 0 ]]; do
       FOCUS="$1"; shift ;;
   esac
 done
+
+# Guidance (--prompt/--only) steers a QA run; it has no meaning for discovery.
+if [[ -n "$GUIDE_MODE" && "${DISCOVER:-false}" == "true" ]]; then
+  echo "✗ --prompt/--only steer a QA run and can't be combined with --discover."
+  exit 1
+fi
+
+# Build the guidance text once. It is injected into BOTH the goal (lands in the
+# protected first messages) and every continuation nudge (protected tail), so it
+# stays in the model's context across compression and babysitter continuations.
+GUIDE_BLOCK=""        # inserted into the goal prompt
+GUIDE_NUDGE_LINE=""   # appended to each continuation nudge
+if [[ "$GUIDE_MODE" == "prompt" ]]; then
+  GUIDE_BLOCK="
+PRIORITY FOR THIS RUN — the user specifically asked you to focus on the following. Do it FIRST and most thoroughly, then continue with normal testing of the area. Keep it in mind the whole run:
+>>> ${GUIDE_TEXT} <<<
+"
+  GUIDE_NUDGE_LINE=" Also keep prioritising the user's focus for this run: ${GUIDE_TEXT}"
+elif [[ "$GUIDE_MODE" == "only" ]]; then
+  GUIDE_BLOCK="
+THIS RUN IS NARROWLY SCOPED. Test ONLY the following on this area, exhaustively — do NOT do a broad sweep of unrelated functionality, and ignore any instruction below to 'prioritise what area.md says is not covered':
+>>> ${GUIDE_TEXT} <<<
+If you trip over a genuine bug outside this scope (e.g. the page errors or crashes), still record it — but do not go looking for anything beyond the instruction above.
+"
+  GUIDE_NUDGE_LINE=" Remember: this run tests ONLY '${GUIDE_TEXT}' — keep exhausting that, do not broaden out."
+fi
 
 source /opt/hermes/.venv/bin/activate
 
@@ -236,6 +280,11 @@ if [[ "$DISCOVER" == "true" ]]; then
 else
   echo "▶ QA run: site=${SITE} area=${AREA} persona=${PERSONA} (max turns: ${MAX_TURNS})"
 fi
+if [[ "$GUIDE_MODE" == "prompt" ]]; then
+  echo "▶ Guided (prioritise): ${GUIDE_TEXT}"
+elif [[ "$GUIDE_MODE" == "only" ]]; then
+  echo "▶ Guided (ONLY, ledger-neutral): ${GUIDE_TEXT}"
+fi
 echo ""
 
 # Toolsets are restricted to what a QA run needs: every extra toolset adds
@@ -271,12 +320,12 @@ When you have walked all navigation — or are running low on turns:
 - Print the list of newly discovered areas as your final message." \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 else
-  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md."
+  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md.${GUIDE_NUDGE_LINE}"
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
   -t browser,skills,file,terminal \
-  -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.
+  -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.${GUIDE_BLOCK}
 
 Before you start:
 - Load these skills with skill_view: 'site-config', 'web-qa-workflow'
@@ -397,7 +446,11 @@ for b in "$RUN_DIR"/bug-*.md; do
 done
 
 # Write back the area notes (size-capped — the ledger holds state, not history).
-if [[ -s "$RUN_DIR/area.md" ]]; then
+# --only runs are ledger-neutral: a narrow targeted run must NOT overwrite the
+# area's broad coverage notes (it only exercised one slice).
+if [[ "$GUIDE_MODE" == "only" ]]; then
+  echo "▶ --only run: leaving the ledger untouched (area.md + last-tested not updated)."
+elif [[ -s "$RUN_DIR/area.md" ]]; then
   head -60 "$RUN_DIR/area.md" > "$SITE_DIR/$AREA.md"
 fi
 
@@ -455,7 +508,7 @@ fi
 # Stamp the tested area in the index. Discovery runs do NOT stamp anything —
 # mapped is not tested; discovered areas stay 'never' so test runs pick them up.
 TODAY="$(date +%F)"
-if [[ "$DISCOVER" == "true" || "$DRIFTED" == "true" ]]; then
+if [[ "$DISCOVER" == "true" || "$DRIFTED" == "true" || "$GUIDE_MODE" == "only" ]]; then
   :
 elif awk -F'|' -v a="$AREA" -v p="$PERSONA" '
      /^#/ {next}
