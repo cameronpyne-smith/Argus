@@ -20,6 +20,10 @@
 #   argus-test expenses --only   "test price fields for invalid chars + limits"
 #                                          # test ONLY this (ledger-neutral; no area.md/stamp update)
 #   (--prompt and --only are mutually exclusive and stay loaded in context all run.)
+#   argus-test dashboard --viewport mobile --local
+#                                          # responsive pass at a mobile-size viewport
+#                                          # (mobile=390x844, tablet=820x1180, or custom WxH;
+#                                          #  ledger-neutral — desktop notes/stamp untouched)
 #
 # Prerequisite for --local (host-side, one-time): Ollama's /v1 endpoint ignores
 # per-request num_ctx, so --local uses a model variant with the context window
@@ -55,6 +59,14 @@ FOCUS=""
 # (test ONLY the instruction, ledger-neutral). The two are mutually exclusive.
 GUIDE_TEXT=""
 GUIDE_MODE=""
+# Non-default viewport (--viewport). Empty = desktop default (1280x1080 set by
+# browser_tool). When set, the run is a responsive-layout pass and is
+# ledger-neutral: area.md is written from the desktop perspective, and letting a
+# 390px run rewrite it ("nav is hidden behind a hamburger") would poison the
+# facts every desktop run relies on.
+VIEWPORT=""
+VIEWPORT_W=""
+VIEWPORT_H=""
 PERSONA="candidate"
 # Sessions are deliberately SHORT (120 turns): the context compressor can
 # no-op on long agentic sessions and pin them at the 32K ceiling; every
@@ -113,6 +125,26 @@ while [[ $# -gt 0 ]]; do
       # Focus this run EXCLUSIVELY on this instruction (skip the broad sweep).
       if [[ -n "$GUIDE_MODE" ]]; then echo "✗ --prompt and --only are mutually exclusive — pass only one."; exit 1; fi
       GUIDE_TEXT="$2"; GUIDE_MODE="only"; shift 2 ;;
+    --viewport)
+      # Responsive-layout pass at a non-desktop viewport. Exports
+      # ARGUS_BROWSER_VIEWPORT_W/H, which browser_tool re-applies on every
+      # navigate (same mechanism as the desktop 1280x1080 default). CSS size
+      # only — no touch events or mobile user-agent — but CSS width is what
+      # responsive breakpoints key off, so it surfaces the layout bug class.
+      case "$2" in
+        mobile) VIEWPORT_W=390; VIEWPORT_H=844 ;;
+        tablet) VIEWPORT_W=820; VIEWPORT_H=1180 ;;
+        *)
+          if [[ "$2" =~ ^[0-9]+x[0-9]+$ ]]; then
+            VIEWPORT_W="${2%x*}"; VIEWPORT_H="${2#*x}"
+          else
+            echo "✗ --viewport takes 'mobile' (390x844), 'tablet' (820x1180) or a custom WxH (e.g. 414x896)."
+            exit 1
+          fi ;;
+      esac
+      VIEWPORT="$2"
+      export ARGUS_BROWSER_VIEWPORT_W="$VIEWPORT_W" ARGUS_BROWSER_VIEWPORT_H="$VIEWPORT_H"
+      shift 2 ;;
     --issues)
       FILE_ISSUES=true; shift ;;
     --no-issues)
@@ -127,6 +159,12 @@ done
 # Guidance (--prompt/--only) steers a QA run; it has no meaning for discovery.
 if [[ -n "$GUIDE_MODE" && "${DISCOVER:-false}" == "true" ]]; then
   echo "✗ --prompt/--only steer a QA run and can't be combined with --discover."
+  exit 1
+fi
+# Discovery maps the site's navigation; at a mobile viewport most of that nav
+# is collapsed/hidden, so a mobile discovery would under-fill the index.
+if [[ -n "$VIEWPORT" && "${DISCOVER:-false}" == "true" ]]; then
+  echo "✗ --viewport is a QA-run responsive pass and can't be combined with --discover."
   exit 1
 fi
 
@@ -148,6 +186,28 @@ THIS RUN IS NARROWLY SCOPED. Test ONLY the following on this area, exhaustively 
 If you trip over a genuine bug outside this scope (e.g. the page errors or crashes), still record it — but do not go looking for anything beyond the instruction above.
 "
   GUIDE_NUDGE_LINE=" Remember: this run tests ONLY '${GUIDE_TEXT}' — keep exhausting that, do not broaden out."
+fi
+
+# Viewport awareness: like GUIDE_BLOCK, injected into BOTH the goal (protected
+# first messages) and every nudge (protected tail) — a model that forgets it is
+# on a 390px screen files "the navigation is missing" as a bug.
+VIEWPORT_BLOCK=""
+VIEWPORT_NUDGE_LINE=""
+VIEWPORT_LABEL=""
+if [[ -n "$VIEWPORT" ]]; then
+  if [[ "$VIEWPORT" == "${VIEWPORT_W}x${VIEWPORT_H}" ]]; then
+    VIEWPORT_LABEL="$VIEWPORT"
+  else
+    VIEWPORT_LABEL="${VIEWPORT} ${VIEWPORT_W}x${VIEWPORT_H}"
+  fi
+  VIEWPORT_BLOCK="
+THIS RUN USES A SMALL ${VIEWPORT_LABEL} VIEWPORT — it is a responsive-layout pass. Judge every page as a real user on a screen this size would:
+- Responsive bugs ARE in scope: content clipped or overflowing horizontally, elements overlapping, controls that cannot be reached or clicked at this size, text or buttons rendered off-screen, layouts that visibly break.
+- Normal small-screen behaviour is NOT a bug: navigation collapsed behind a hamburger/menu button (open it to navigate), columns stacking vertically, needing to scroll. Never file 'the navigation/sidebar is missing' — open the menu button instead.
+- Functionality must still WORK at this size: test forms, edits and submissions as usual, and file it if something only fails at this viewport.
+- In every bug you record, note that it occurred at the ${VIEWPORT_LABEL} viewport if the bug looks layout- or size-related.
+"
+  VIEWPORT_NUDGE_LINE=" Remember: this run is at a small ${VIEWPORT_LABEL} viewport — responsive/layout issues are in scope; hamburger navigation and vertical scrolling are normal, not bugs."
 fi
 
 source /opt/hermes/.venv/bin/activate
@@ -285,6 +345,9 @@ if [[ "$GUIDE_MODE" == "prompt" ]]; then
 elif [[ "$GUIDE_MODE" == "only" ]]; then
   echo "▶ Guided (ONLY, ledger-neutral): ${GUIDE_TEXT}"
 fi
+if [[ -n "$VIEWPORT" ]]; then
+  echo "▶ Viewport: ${VIEWPORT_LABEL} (responsive pass, ledger-neutral)"
+fi
 echo ""
 
 # Toolsets are restricted to what a QA run needs: every extra toolset adds
@@ -320,12 +383,12 @@ When you have walked all navigation — or are running low on turns:
 - Print the list of newly discovered areas as your final message." \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 else
-  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md.${GUIDE_NUDGE_LINE}"
+  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md.${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}"
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
   -t browser,skills,file,terminal \
-  -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.${GUIDE_BLOCK}
+  -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.${GUIDE_BLOCK}${VIEWPORT_BLOCK}
 
 Before you start:
 - Load these skills with skill_view: 'site-config', 'web-qa-workflow'
@@ -450,6 +513,8 @@ done
 # area's broad coverage notes (it only exercised one slice).
 if [[ "$GUIDE_MODE" == "only" ]]; then
   echo "▶ --only run: leaving the ledger untouched (area.md + last-tested not updated)."
+elif [[ -n "$VIEWPORT" ]]; then
+  echo "▶ --viewport run: leaving the ledger untouched (area notes describe the desktop layout; last-tested not updated)."
 elif [[ -s "$RUN_DIR/area.md" ]]; then
   head -60 "$RUN_DIR/area.md" > "$SITE_DIR/$AREA.md"
 fi
@@ -508,7 +573,7 @@ fi
 # Stamp the tested area in the index. Discovery runs do NOT stamp anything —
 # mapped is not tested; discovered areas stay 'never' so test runs pick them up.
 TODAY="$(date +%F)"
-if [[ "$DISCOVER" == "true" || "$DRIFTED" == "true" || "$GUIDE_MODE" == "only" ]]; then
+if [[ "$DISCOVER" == "true" || "$DRIFTED" == "true" || "$GUIDE_MODE" == "only" || -n "$VIEWPORT" ]]; then
   :
 elif awk -F'|' -v a="$AREA" -v p="$PERSONA" '
      /^#/ {next}
@@ -534,10 +599,19 @@ fi
 BUG_COUNT=0
 if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
   {
-    echo "# ${SITE} ${AREA} QA report — $(date '+%Y-%m-%d %H:%M') (persona: ${PERSONA})"
+    if [[ -n "$VIEWPORT" ]]; then
+      echo "# ${SITE} ${AREA} QA report — $(date '+%Y-%m-%d %H:%M') (persona: ${PERSONA}, viewport: ${VIEWPORT_LABEL})"
+    else
+      echo "# ${SITE} ${AREA} QA report — $(date '+%Y-%m-%d %H:%M') (persona: ${PERSONA})"
+    fi
     echo
     for p in "$RUN_DIR"/bug-*.md; do
       cat "$p"
+      # Deterministic viewport stamp on every bug: layout issues filed from a
+      # 390px run are meaningless to a dev reproducing at desktop size.
+      if [[ -n "$VIEWPORT" ]]; then
+        echo "Viewport: ${VIEWPORT_LABEL}"
+      fi
       echo
       echo "---"
       echo
