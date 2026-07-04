@@ -78,11 +78,14 @@ VIEWPORT=""
 VIEWPORT_W=""
 VIEWPORT_H=""
 PERSONA="candidate"
-# Sessions are deliberately SHORT (120 turns): the context compressor can
-# no-op on long agentic sessions and pin them at the 32K ceiling; every
-# babysitter continuation restarts with freshly compressed context (~10-20K),
-# so many short sessions beat one long one. Override with --max-turns.
-MAX_TURNS=120
+# Session length (150 turns). Sessions used to be kept short because the context
+# compressor could no-op on long agentic sessions and pin them at the old 32K
+# ceiling; every babysitter continuation restarts with freshly compressed context
+# (~10-20K). With the 128K local variant that ceiling is far higher, so a longer
+# session has real headroom — and the stateful bug classes (create→edit→delete,
+# interrupted wizards, double-submit) need several uninterrupted turns to set up,
+# which a too-short session cuts off mid-sequence. Override with --max-turns.
+MAX_TURNS=150
 # Model + provider both default to the local qwen variant and are independently
 # overridable (--model / --provider). qwen3.6-argus128k = qwen3.6:35b with
 # PARAMETER num_ctx 131072 baked in — Ollama's /v1 (OpenAI-compat) endpoint
@@ -423,7 +426,8 @@ Rules:
 - Never end your turn by announcing what you will do next — keep calling tools until the work is done. Your final message comes only after /opt/data/run/summary.md is written.
 - The browser console is only for confirming a UI bug you already observed. Do not spend turns analysing console logs, network requests or backend endpoints on their own.
 - Use browser_snapshot to read pages. Call browser_vision only to capture a bug screenshot or when the snapshot genuinely cannot show something visual — its output is huge and crowds out your context.
-- Prioritise what area.md says is NOT covered yet, and use different test inputs than previous runs.
+- Start with the 'What remains untested' items in area.md and exhaust those first; then keep going deeper. Use different test inputs than previous runs.
+- Do NOT stop at basic input validation — that is the shallow layer. Deliberately exercise the deeper bug classes and access-control probes described in the web-qa-workflow skill: persistence across reload/re-login, the full create→edit→delete lifecycle, interrupted/resumed wizards, browser back/forward and double-submit, dependent-field transitions, error recovery, and mutating an id in the URL (or navigating to a cross-persona URL from site-config) to test authorization. These are where the bugs shallow testing misses actually live — spend real effort here.
 
 Process:
 1. ${LOGIN_STEP}
@@ -458,21 +462,22 @@ echo ""
 # Babysitter + convergence: a small model rarely writes summary.md voluntarily,
 # so without a convergence signal it rides the whole nudge ceiling even on a
 # clean area (a 33-field form once burned ~2h / the full cycle). summary.md is
-# the explicit completion signal; failing that, we converge when a full 120-turn
-# continuation produces NO NEW bug files. We require TWO consecutive barren
+# the explicit completion signal; failing that, we converge when a full
+# continuation produces NO NEW bug files. We require THREE consecutive barren
 # continuations (≈ a clean area genuinely has nothing), so areas that find bugs
-# in bursts across continuations are not cut short.
+# in bursts across continuations are not cut short — the deeper stateful/authz
+# probes often surface bugs late, after a couple of quiet continuations.
 # find (not ls|wc) so an empty match is exit 0, never tripping set -e/pipefail.
 count_bugs() { find "$RUN_DIR" -maxdepth 1 -name 'bug-*.md' 2>/dev/null | wc -l | tr -d ' '; }
 NUDGES=0
 NO_PROGRESS=0
 PREV_BUGS=$(count_bugs)
-while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
+while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 8 ]]; do
   NUDGES=$((NUDGES + 1))
-  echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/5)..."
+  echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/8)..."
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
-    argus chat --continue --max-turns 120 \
+    argus chat --continue --max-turns 150 \
     -t browser,skills,file,terminal \
     -q "$NUDGE_PROMPT" \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
@@ -486,8 +491,8 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 5 ]]; do
   CUR_BUGS=$(count_bugs)
   if [[ "$CUR_BUGS" == "$PREV_BUGS" ]]; then
     NO_PROGRESS=$((NO_PROGRESS + 1))
-    if [[ $NO_PROGRESS -ge 2 ]]; then
-      echo "▶ Converged: two continuations recorded no new bugs — ending run."
+    if [[ $NO_PROGRESS -ge 3 ]]; then
+      echo "▶ Converged: three continuations recorded no new bugs — ending run."
       break
     fi
   else
