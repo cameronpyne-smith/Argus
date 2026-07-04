@@ -406,7 +406,7 @@ When you have walked all navigation — or are running low on turns:
 - Print the list of newly discovered areas as your final message." \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 else
-  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). When done — or if you have already tested enough — rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md.${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}"
+  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). Do NOT write /opt/data/run/summary.md until you have attempted every applicable item in the deep-coverage checklist from your original instructions: (A) full create→edit→delete lifecycle, (B) double-submit, (C) browser back/forward/refresh mid-flow, (D) persistence across reload, and (E) authorization probes — mutate any id in the URL and navigate to the cross-persona URLs from site-config. If any of those is still unattempted, do it NOW. Only once all applicable items are attempted, rewrite /opt/data/run/area.md (current facts and coverage, max 50 lines) and write /opt/data/run/summary.md (noting each checklist item's outcome).${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}"
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
@@ -451,10 +451,19 @@ Process:
    A bug that is not saved to a file does not exist. Never describe bugs only in chat.
 8. If you notice pages or sections OUTSIDE '${AREA}' that your notes do not mention (new nav links, new features), record each by running in the terminal: echo '<area-name> | <exact URL from the browser>' >> /opt/data/run/new-areas.md — do not test them this run.
 
-When finished — or as soon as you are running low on turns:
+REQUIRED deep-coverage checklist — you MUST attempt every item that applies to this area before you may finish. Actually perform the sequence in the browser; record a bug if it misbehaves. If it behaves correctly the item still counts as attempted. Do NOT skip one because you assume it will pass — trying it IS the job, and these are the bugs shallow testing misses:
+   A. Full lifecycle (if the area creates or edits records): create a record, edit it, then delete it — and check that a deleted item does not linger in lists/counts/dropdowns and cannot still be opened or edited.
+   B. Double-submit: save or submit the same thing twice (click twice, or submit then press browser Back and re-submit) — watch for duplicate records.
+   C. Back / forward / refresh mid-flow: after a submit, use the browser Back button, and refresh a confirmation or detail page — watch for stale or resurrected form state.
+   D. Persistence: enter or save a value, then reload the page and also navigate away and back — confirm it survived and is not stale or reverted.
+   E. Authorization (if ANY URL here contains an id — a record id, an org UUID, ?id=): mutate that id in the URL to a different or foreign value, AND navigate to the cross-persona URLs listed in site-config. A clean denial/redirect/404 is correct; leaking another party's data, letting you act on it, or a 500 / generic error page is a bug.
+
+When finished — and ONLY after you have attempted every applicable checklist item above:
 - Rewrite /opt/data/run/area.md with write_file: the CURRENT facts about this area — what exists, its quirks, what is now covered, what remains untested. Replace stale lines instead of appending. No dates, no run history. Maximum 50 lines.
-- Write /opt/data/run/summary.md with write_file: what you did this run.
-- Print a short list of the bugs you recorded as your final message." \
+- Write /opt/data/run/summary.md with write_file: what you did this run, and for EACH checklist item (A-E) state whether you attempted it and what happened.
+- Print a short list of the bugs you recorded as your final message.
+
+Do NOT write summary.md while any applicable checklist item is still unattempted — keep testing instead. summary.md is your signal that the deep checklist is DONE, not that you are tired or low on ideas." \
   $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 fi
 
