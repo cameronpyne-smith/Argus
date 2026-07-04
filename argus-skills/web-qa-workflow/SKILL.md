@@ -86,6 +86,21 @@ persist", rule out the mundane causes first:
    when you typed. Re-snapshot (refs go stale), then type again.
 3. "Typed value doesn't persist" is more often a test-interaction issue than a
    site bug. Confirm the value really reached the field before reporting it.
+4. A button that "does nothing" or "stays disabled" is usually NOT a site bug:
+   the ref went stale after a re-render, or a required control is not yet
+   satisfied. Vaadin comboboxes in particular need a COMMITTED selection — pick
+   an option and see the value land in the field — before dependent fields or
+   the submit button enable. Re-snapshot for a fresh ref, confirm every required
+   field shows a committed value, then click the fresh ref. NEVER force a click
+   or set a value with JavaScript (`.click()`, `el.value`, `dispatchEvent`) — it
+   bypasses the framework and manufactures false results. If the real control
+   still will not respond after a fresh snapshot and satisfied requirements, THAT
+   is your evidence — record it — but a JS-forced "fix" never is.
+5. Do NOT diagnose the page with `document.querySelectorAll(...)` and conclude it
+   is "empty" or "crashed". These apps render inside shadow DOM and web
+   components, so a plain querySelector sees 0 inputs even when the fields are
+   present and fully usable. Trust the accessibility snapshot and actual
+   interaction (browser_vision if unsure), never a raw DOM count.
 
 Use **valid, well-formed test data** for the happy path, and only deliberately
 malformed data when you are specifically testing validation. A field correctly
