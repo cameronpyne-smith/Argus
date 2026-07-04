@@ -6387,6 +6387,69 @@ class AIAgent:
         return messages
 
     @staticmethod
+    def _prune_superseded_snapshots(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep only the most-recent browser page snapshot in the API window.
+
+        Act->observe fusion (tools/browser_tool.py) attaches a fresh page
+        snapshot to every click/type/press/scroll/back result so the model can
+        act again without a separate browser_snapshot observe turn. Those
+        snapshots are only useful until the next one arrives — an earlier page
+        state has no value once the model has moved on. Left intact they pile
+        up (up to ~8k chars each) and pin the context ceiling within minutes,
+        forcing repeated compression that erodes the model's memory of what it
+        already tested (this is exactly what sank the Playwright-MCP trial,
+        which had no such pruning). Walk the messages, keep the single newest
+        snapshot payload intact, and replace every earlier snapshot field with
+        a short stub — the rest of each result (success, url, title,
+        element_count, any no-op note) is left untouched.
+
+        Runs on the per-call ``api_messages`` copy only, so stored session
+        history keeps full snapshots for persistence and the UI transcript.
+        Same design as ``_drop_thinking_only_and_merge_users``.
+        """
+        seen_latest = False
+        pruned = 0
+        out: List[Dict[str, Any]] = []
+        # Walk backward so the first snapshot-bearing result we hit is newest.
+        for msg in reversed(messages):
+            if msg.get("role") != "tool":
+                out.append(msg)
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or '"snapshot"' not in content:
+                out.append(msg)
+                continue
+            try:
+                obj = json.loads(content)
+            except Exception:
+                out.append(msg)
+                continue
+            snap = obj.get("snapshot") if isinstance(obj, dict) else None
+            if not isinstance(snap, str) or len(snap) < 200:
+                out.append(msg)
+                continue
+            if not seen_latest:
+                seen_latest = True
+                out.append(msg)
+                continue
+            obj["snapshot"] = (
+                "[superseded snapshot pruned — a newer page snapshot appears "
+                "later in this conversation; take a fresh browser_snapshot if "
+                "you need this earlier page state]"
+            )
+            new_msg = dict(msg)
+            new_msg["content"] = json.dumps(obj, ensure_ascii=False)
+            out.append(new_msg)
+            pruned += 1
+        if pruned:
+            logger.debug(
+                "Pre-call: pruned %d superseded browser snapshot(s) from API window",
+                pruned,
+            )
+        out.reverse()
+        return out
+
+    @staticmethod
     def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
         """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
 
@@ -11921,6 +11984,7 @@ class AIAgent:
             # tool_call was summarized away; Responses API rejects that as
             # "No tool call found for function call output".
             api_messages = self._sanitize_api_messages(api_messages)
+            api_messages = self._prune_superseded_snapshots(api_messages)
 
             # Same safety net as the main loop: drop thinking-only assistant
             # turns so Anthropic-family providers don't 400 the summary call.
@@ -12379,6 +12443,17 @@ class AIAgent:
             and len(messages) > self.context_compressor.protect_first_n
                                 + self.context_compressor.protect_last_n + 1
         ):
+            # Collapse superseded browser snapshots in the STORED history before
+            # sizing. Act->observe fusion attaches an ~8k snapshot to every
+            # browser action; only the latest is ever useful. Without this the
+            # rough estimate sees phantom tokens the model never receives (the
+            # wire copy is already pruned) AND the compressor's protected tail
+            # stays full of stale snapshots it cannot shrink — which produced a
+            # thrash where preflight burned its 3 passes without getting under
+            # threshold. Pruning here keeps stored history lean for every
+            # downstream sizing/compression decision and for session reloads.
+            messages = self._prune_superseded_snapshots(messages)
+            self._session_messages = messages
             # Include tool schema tokens — with many tools these can add
             # 20-30K+ tokens that the old sys+msg estimate missed entirely.
             _preflight_tokens = estimate_request_tokens_rough(
@@ -12778,6 +12853,12 @@ class AIAgent:
             # gated on context_compressor — so orphans from session loading or
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
+
+            # Keep only the newest browser page snapshot in the API window.
+            # Act->observe fusion attaches a snapshot to every browser action;
+            # superseded ones are dead weight that would otherwise pin the
+            # context ceiling. Per-call copy only — history keeps full copies.
+            api_messages = self._prune_superseded_snapshots(api_messages)
 
             # Drop thinking-only assistant turns (reasoning but no visible
             # output and no tool_calls) and merge any adjacent user messages
@@ -15318,6 +15399,12 @@ class AIAgent:
                     # estimate to avoid missing compression.  Without this,
                     # a session can grow unbounded after disconnects because
                     # should_compress(0) never fires.  (#2153)
+                    # Collapse superseded browser snapshots in stored history
+                    # before the compression decision (see preflight block for
+                    # rationale) — keeps the protected tail shrinkable and the
+                    # fallback estimate honest.
+                    messages = self._prune_superseded_snapshots(messages)
+
                     _compressor = self.context_compressor
                     if _compressor.last_prompt_tokens > 0:
                         # Only use prompt_tokens — completion/reasoning

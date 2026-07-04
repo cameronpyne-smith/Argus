@@ -22,10 +22,36 @@ summary: How to explore a web app, what counts as a bug, and how to report findi
    - Special characters: `<script>alert(1)</script>`, `O'Brien`, `£50,000`, `"quoted"`
    - Boundary values (0, -1, maximum allowed)
 
-4. **Re-snapshot after every action.** Confirm what actually happened before drawing conclusions.
+4. **Actions return a fresh snapshot for you.** `browser_click`, `browser_type`,
+   `browser_select`, `browser_check`, `browser_wait`, `browser_scroll`, `browser_press`
+   and `browser_back` each include the resulting page snapshot in their result — read it
+   instead of spending a separate `browser_snapshot` call. Only call `browser_snapshot`
+   explicitly to refresh a page that changed on its own, or with `full=true` for complete content.
 
 5. **Exhaust alternatives before concluding something is broken.** If one approach fails, try another.
    A click that does nothing is worth retrying with a different method before reporting it.
+   If a click result carries `no_visible_change: true`, the page did not change — the control may be
+   disabled or the ref stale; re-snapshot and try a different element rather than repeating the click.
+
+## Interacting with forms
+
+Use the right verb for each control — improvising with clicks on native controls often
+silently fails:
+- **Dropdowns / `<select>`**: `browser_select` (by option label, value, or index). Don't click a
+  native dropdown open.
+- **Checkboxes / radios**: `browser_check` (`checked: false` to uncheck). Sets an explicit state.
+- **File inputs**: `browser_upload`. The file must exist on disk first — create a small test file
+  via the terminal (a receipt PDF/PNG, an oversized file to probe size limits, a `.exe` to probe
+  type validation).
+- **Async settling**: after an action that triggers loading, `browser_wait` for the expected
+  element (or a short ms delay) so you observe the settled page, not a mid-transition one.
+
+## JS errors surface automatically
+
+Action results include `new_js_errors` when an uncaught JavaScript exception fires as a result of
+that action. A JS error thrown during normal use is very often the bug itself — reproduce it and
+record it. Each unique error is surfaced once per session, so if you want the full console log
+(including `console.error`/warnings) call `browser_console`.
 
 ## Browser Console Rules
 

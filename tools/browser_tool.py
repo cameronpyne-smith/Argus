@@ -51,6 +51,7 @@ Usage:
 
 import atexit
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -1055,6 +1056,19 @@ _recording_sessions: set = set()  # session_keys with active recordings
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
 _LOCAL_SUFFIX = "::local"
 
+# Hash of the most recent post-action snapshot per session key. Used by
+# _attach_post_action_snapshot to detect a click that produced no visible
+# change (identical snapshot before and after). Cleared on navigate so a
+# post-nav click never compares against the previous page.
+_last_snapshot_hash: Dict[str, str] = {}
+
+# Uncaught JS error messages already surfaced for a session key, so a recurring
+# error isn't re-reported on every action. An experienced QA watches the
+# console constantly; _attach_post_action_snapshot proactively surfaces NEW
+# uncaught exceptions triggered by an action (a JS error thrown by a click is
+# very often the bug itself).
+_seen_console_errors: Dict[str, set] = {}
+
 # Flag to track if cleanup has been done
 _cleanup_done = False
 
@@ -1496,6 +1510,77 @@ BROWSER_TOOL_SCHEMAS = [
                 }
             },
             "required": []
+        }
+    },
+    {
+        "name": "browser_select",
+        "description": "Select one or more options in a dropdown / <select> element identified by its ref ID. Use this for native selects and ARIA comboboxes instead of clicking — clicking a native dropdown often fails headless. Values match by option value, visible label, or index. Requires a snapshot first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The <select> element reference from the snapshot (e.g., '@e7')"
+                },
+                "values": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Option value(s), label(s), or index(es) to select. One entry for a normal dropdown; multiple for a multi-select."
+                }
+            },
+            "required": ["ref", "values"]
+        }
+    },
+    {
+        "name": "browser_check",
+        "description": "Check or uncheck a checkbox or radio button identified by its ref ID. More reliable than clicking, and sets an explicit desired state. Requires a snapshot first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The checkbox/radio element reference from the snapshot (e.g., '@e9')"
+                },
+                "checked": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "True to check (default), False to uncheck."
+                }
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_wait",
+        "description": "Wait for an element to appear, or for a fixed delay, before reading the page. Use after an action that triggers async loading (fetch, route change) so you observe the settled page instead of a mid-transition one. Requires browser_navigate first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "An element ref/selector to wait for (e.g., '@e5', 'text=Saved'), OR a plain number of milliseconds (e.g., '1500')."
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "browser_upload",
+        "description": "Upload one or more files to a file-input element identified by its ref ID. Files must already exist on disk — create small test files (e.g. a receipt PDF/PNG) via the terminal tool first. Useful for exercising file-type/size validation. Requires a snapshot first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The file-input element reference from the snapshot (e.g., '@e12')"
+                },
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Absolute path(s) to the file(s) to upload."
+                }
+            },
+            "required": ["ref", "files"]
         }
     },
 ]
@@ -2173,6 +2258,95 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     return '\n'.join(result)
 
 
+def _attach_post_action_snapshot(
+    effective_task_id: str,
+    response: dict,
+    detect_no_change: bool = False,
+) -> None:
+    """Fuse a fresh compact snapshot into an action result (act->observe).
+
+    After a click/type/press/scroll/back, the model almost always needs to see
+    the resulting page before it can act again. Historically that cost a
+    separate browser_snapshot call — a whole extra observe turn per action.
+    This runs a compact, interactive-only snapshot inline and attaches it to
+    ``response`` so the model can act again immediately. The trial that
+    motivated this (Playwright MCP) showed the speed-up is real but that
+    un-pruned snapshots pin the context ceiling; superseded copies are pruned
+    per-call in run_agent so only the latest survives in the API window.
+
+    When ``detect_no_change`` is True (click), compares the new snapshot to the
+    previous post-action snapshot for this session. An identical snapshot means
+    the click did nothing visible — surfaced explicitly so the model doesn't
+    silently build on a no-op and spiral (the same failure class the fill
+    read-back guard addresses for typing).
+
+    Best-effort: never raises and never flips a successful action to failed.
+    """
+    try:
+        snap = _run_browser_command(
+            effective_task_id, "snapshot", ["-i", "-c"], timeout=15
+        )
+    except Exception as e:
+        logger.debug("post-action snapshot failed: %s", e)
+        return
+    if not snap.get("success"):
+        return
+    data = snap.get("data", {})
+    snapshot_text = data.get("snapshot", "")
+    refs = data.get("refs", {})
+
+    new_hash = hashlib.md5(
+        snapshot_text.encode("utf-8", errors="replace")
+    ).hexdigest()
+    prev_hash = _last_snapshot_hash.get(effective_task_id)
+    if detect_no_change and prev_hash is not None and new_hash == prev_hash:
+        response["no_visible_change"] = True
+        response["note"] = (
+            "The page snapshot is identical before and after this click — the "
+            "click produced no visible change. The element may be disabled, "
+            "purely decorative, or the ref stale. Do not repeat the same "
+            "click; take a fresh browser_snapshot and try a different element "
+            "or approach. This is likely a tool/interaction issue, not a site "
+            "bug — do not report it unless the control is clearly meant to act."
+        )
+    _last_snapshot_hash[effective_task_id] = new_hash
+
+    if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        snapshot_text = _truncate_snapshot(snapshot_text)
+    response["snapshot"] = snapshot_text
+    response["element_count"] = len(refs) if refs else 0
+    if snap.get("fallback_warning") and not response.get("fallback_warning"):
+        _copy_fallback_warning(response, snap)
+
+    # Surface uncaught JS errors triggered since the last action. Only NEW
+    # messages (deduped per session) are attached, so a recurring error doesn't
+    # spam every turn. This is the highest-signal, lowest-noise console
+    # category — an uncaught exception is almost always a real defect. The
+    # model can still call browser_console for the full log (including
+    # console.error/warn) when it wants to dig deeper.
+    try:
+        err_res = _run_browser_command(
+            effective_task_id, "errors", [], timeout=10
+        )
+        if err_res.get("success"):
+            seen = _seen_console_errors.setdefault(effective_task_id, set())
+            fresh = []
+            for err in err_res.get("data", {}).get("errors", []):
+                msg = (err.get("text") or err.get("message") or "").strip()
+                if msg and msg not in seen:
+                    seen.add(msg)
+                    fresh.append(msg)
+            if fresh:
+                response["new_js_errors"] = fresh[:5]
+                response["js_error_hint"] = (
+                    "Uncaught JavaScript error(s) appeared after this action — "
+                    "this is very often a real bug. Reproduce it and, if "
+                    "confirmed, record it."
+                )
+    except Exception as e:
+        logger.debug("post-action error surfacing failed: %s", e)
+
+
 # ============================================================================
 # Browser Tool Functions
 # ============================================================================
@@ -2293,6 +2467,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # on the same task_id hit it (critical when hybrid routing has both a
     # cloud session and a local sidecar alive concurrently).
     _last_active_session_key[effective_task_id] = nav_session_key
+
+    # New page — drop the post-action snapshot baseline so the first click
+    # after this navigation never falsely reports "no visible change" against
+    # the previous page's state.
+    _last_snapshot_hash.pop(nav_session_key, None)
 
     if result.get("success"):
         data = result.get("data", {})
@@ -2428,6 +2607,16 @@ def browser_snapshot(
         snapshot_text = data.get("snapshot", "")
         refs = data.get("refs", {})
 
+        # Keep the post-action no-change baseline in sync. A manual compact
+        # snapshot is the same view mode ("-i -c") the fusion helper uses, so a
+        # click that follows can be compared against it. Skip the full snapshot
+        # (different mode) to avoid a spurious baseline. Hash the raw text
+        # before any truncation, matching _attach_post_action_snapshot.
+        if not full:
+            _last_snapshot_hash[effective_task_id] = hashlib.md5(
+                snapshot_text.encode("utf-8", errors="replace")
+            ).hexdigest()
+
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
             snapshot_text = _extract_relevant_content(snapshot_text, user_task)
@@ -2501,7 +2690,9 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
             "success": True,
             "clicked": ref
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        _copy_fallback_warning(response, result)
+        _attach_post_action_snapshot(effective_task_id, response, detect_no_change=True)
+        return json.dumps(response, ensure_ascii=False)
     else:
         response = {
             "success": False,
@@ -2584,7 +2775,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             "typed": text,
             "element": ref
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        _copy_fallback_warning(response, result)
+        _attach_post_action_snapshot(effective_task_id, response)
+        return json.dumps(response, ensure_ascii=False)
     else:
         response = {
             "success": False,
@@ -2639,7 +2832,9 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         "success": True,
         "scrolled": direction
     }
-    return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+    _copy_fallback_warning(response, result)
+    _attach_post_action_snapshot(effective_task_id, response)
+    return json.dumps(response, ensure_ascii=False)
 
 
 def browser_back(task_id: Optional[str] = None) -> str:
@@ -2665,7 +2860,10 @@ def browser_back(task_id: Optional[str] = None) -> str:
             "success": True,
             "url": data.get("url", "")
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        _copy_fallback_warning(response, result)
+        _last_snapshot_hash.pop(effective_task_id, None)
+        _attach_post_action_snapshot(effective_task_id, response)
+        return json.dumps(response, ensure_ascii=False)
     else:
         response = {
             "success": False,
@@ -2697,7 +2895,9 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
             "success": True,
             "pressed": key
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        _copy_fallback_warning(response, result)
+        _attach_post_action_snapshot(effective_task_id, response)
+        return json.dumps(response, ensure_ascii=False)
     else:
         response = {
             "success": False,
@@ -2706,6 +2906,237 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def _normalize_ref(ref: str) -> str:
+    return ref if ref.startswith("@") else f"@{ref}"
+
+
+def browser_select(ref: str, values, task_id: Optional[str] = None) -> str:
+    """
+    Select one or more options in a dropdown / <select> element.
+
+    Args:
+        ref: Element reference from the snapshot (e.g., "@e5")
+        values: Option value, label, or index — a single string or a list of
+            strings for multi-select.
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with the result (includes a fresh post-action snapshot)
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_select is not supported on the Camofox backend",
+        }, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    ref = _normalize_ref(ref)
+
+    if isinstance(values, str):
+        vals = [values]
+    elif isinstance(values, (list, tuple)):
+        vals = [str(v) for v in values]
+    else:
+        vals = [str(values)]
+    if not vals or not any(v.strip() for v in vals):
+        return json.dumps({
+            "success": False,
+            "error": "browser_select requires at least one option value/label",
+        }, ensure_ascii=False)
+
+    try:
+        _run_browser_command(effective_task_id, "scrollintoview", [ref], timeout=15)
+    except Exception:
+        pass
+
+    result = _run_browser_command(effective_task_id, "select", [ref] + vals)
+
+    if result.get("success"):
+        response = {
+            "success": True,
+            "selected": vals,
+            "element": ref,
+        }
+        _copy_fallback_warning(response, result)
+        _attach_post_action_snapshot(effective_task_id, response)
+        return json.dumps(response, ensure_ascii=False)
+    else:
+        response = {
+            "success": False,
+            "error": result.get("error", f"Failed to select {vals} in {ref}"),
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def browser_check(ref: str, checked: bool = True, task_id: Optional[str] = None) -> str:
+    """
+    Check or uncheck a checkbox / radio button.
+
+    Args:
+        ref: Element reference from the snapshot (e.g., "@e5")
+        checked: True to check (default), False to uncheck
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with the result (includes a fresh post-action snapshot)
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_check is not supported on the Camofox backend",
+        }, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    ref = _normalize_ref(ref)
+
+    try:
+        _run_browser_command(effective_task_id, "scrollintoview", [ref], timeout=15)
+    except Exception:
+        pass
+
+    verb = "check" if checked else "uncheck"
+    result = _run_browser_command(effective_task_id, verb, [ref])
+
+    if result.get("success"):
+        response = {
+            "success": True,
+            "checked": checked,
+            "element": ref,
+        }
+        _copy_fallback_warning(response, result)
+        _attach_post_action_snapshot(effective_task_id, response)
+        return json.dumps(response, ensure_ascii=False)
+    else:
+        response = {
+            "success": False,
+            "error": result.get("error", f"Failed to {verb} {ref}"),
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def browser_wait(target: str, task_id: Optional[str] = None) -> str:
+    """
+    Wait for an element to appear, or for a fixed number of milliseconds.
+
+    Use this for SPA async: after an action kicks off a fetch/route change,
+    wait for the resulting element (by ref/selector) or a short delay before
+    reading the page, instead of blindly re-snapshotting.
+
+    Args:
+        target: An element ref/selector to wait for (e.g., "@e5" or
+            "text=Saved"), OR a plain number of milliseconds (e.g., "1500").
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with the result (includes a fresh post-action snapshot)
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_wait is not supported on the Camofox backend",
+        }, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    target = (target or "").strip()
+    if not target:
+        return json.dumps({
+            "success": False,
+            "error": "browser_wait requires a selector/ref or a millisecond value",
+        }, ensure_ascii=False)
+
+    is_ms = target.isdigit()
+    arg = target
+    if not is_ms and not target.startswith("@") and target.startswith("e") and target[1:].isdigit():
+        arg = f"@{target}"
+
+    result = _run_browser_command(
+        effective_task_id, "wait", [arg],
+        timeout=max(_get_command_timeout(), 30),
+    )
+
+    if result.get("success"):
+        response = {
+            "success": True,
+            "waited_for": arg,
+        }
+        _copy_fallback_warning(response, result)
+        _attach_post_action_snapshot(effective_task_id, response)
+        return json.dumps(response, ensure_ascii=False)
+    else:
+        response = {
+            "success": False,
+            "error": result.get("error", f"Wait for '{arg}' timed out or failed"),
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def browser_upload(ref: str, files, task_id: Optional[str] = None) -> str:
+    """
+    Upload one or more files to a file input.
+
+    Files must already exist on the local filesystem (create test files via the
+    terminal tool first, e.g. a small PDF/PNG for a receipt field).
+
+    Args:
+        ref: Element reference of the file input from the snapshot (e.g., "@e5")
+        files: A single path or a list of paths to upload.
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with the result (includes a fresh post-action snapshot)
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_upload is not supported on the Camofox backend",
+        }, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    ref = _normalize_ref(ref)
+
+    if isinstance(files, str):
+        paths = [files]
+    elif isinstance(files, (list, tuple)):
+        paths = [str(f) for f in files]
+    else:
+        paths = [str(files)]
+    paths = [p for p in paths if p.strip()]
+    if not paths:
+        return json.dumps({
+            "success": False,
+            "error": "browser_upload requires at least one file path",
+        }, ensure_ascii=False)
+    if len(paths) > 20:
+        return json.dumps({
+            "success": False,
+            "error": "browser_upload accepts at most 20 files at once",
+        }, ensure_ascii=False)
+
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        return json.dumps({
+            "success": False,
+            "error": f"File(s) not found on disk: {missing}. Create them first "
+                     f"(e.g. via the terminal tool) before uploading.",
+        }, ensure_ascii=False)
+
+    result = _run_browser_command(effective_task_id, "upload", [ref] + paths)
+
+    if result.get("success"):
+        response = {
+            "success": True,
+            "uploaded": paths,
+            "element": ref,
+        }
+        _copy_fallback_warning(response, result)
+        _attach_post_action_snapshot(effective_task_id, response)
+        return json.dumps(response, ensure_ascii=False)
+    else:
+        response = {
+            "success": False,
+            "error": result.get("error", f"Failed to upload to {ref}"),
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
 
@@ -3755,4 +4186,36 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_select",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_select"],
+    handler=lambda args, **kw: browser_select(ref=args.get("ref", ""), values=args.get("values", []), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🔽",
+)
+registry.register(
+    name="browser_check",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_check"],
+    handler=lambda args, **kw: browser_check(ref=args.get("ref", ""), checked=args.get("checked", True), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="☑️",
+)
+registry.register(
+    name="browser_wait",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_wait"],
+    handler=lambda args, **kw: browser_wait(target=str(args.get("target", "")), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="⏳",
+)
+registry.register(
+    name="browser_upload",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_upload"],
+    handler=lambda args, **kw: browser_upload(ref=args.get("ref", ""), files=args.get("files", []), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📎",
 )
