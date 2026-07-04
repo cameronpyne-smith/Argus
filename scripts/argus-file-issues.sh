@@ -5,7 +5,9 @@
 # existing Argus-labeled issues, files only reproduced bugs. Called by
 # argus-test when issue filing is enabled, or standalone on any past report:
 #
-#   argus-file-issues /opt/data/reports/expenses-20260610-1349.md --local
+#   argus-file-issues /opt/data/reports/expenses-20260610-1349.md
+# Uses the local qwen variant by default; --model / --provider override
+# (--provider auto -m gpt-4.1 for a cloud box). --local is a no-op alias.
 #
 # GH_TOKEN is read from ARGUS_GITHUB_TOKEN in /opt/data/.env and exported
 # only for this process — gh in the main QA agent stays unauthenticated.
@@ -14,17 +16,22 @@ set -euo pipefail
 
 REPO="remundo-xml/Remundo.Ui.Platform"
 REPORT_FILE=""
-PROVIDER_FLAGS=""
+# Model + provider default to the local qwen variant and are independently
+# overridable. argus-test forwards its own expanded --provider/--model here, so
+# these SET (not append) — the forwarded values win. For a cloud box run
+# standalone: --provider auto -m gpt-4.1.
+PROVIDER="local"
+MODEL="qwen3.6-argus128k"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      PROVIDER_FLAGS="--provider local -m qwen3.6:35b"
-      shift ;;
-    --provider|-m|--max-turns)
-      # pass-through (argus-test forwards its expanded provider flags)
-      PROVIDER_FLAGS="$PROVIDER_FLAGS $1 $2"
-      shift 2 ;;
+      # Back-compat alias: local qwen is now the default, so this is a no-op.
+      PROVIDER="local"; MODEL="qwen3.6-argus128k"; shift ;;
+    --model|-m)
+      MODEL="$2"; shift 2 ;;
+    --provider)
+      PROVIDER="$2"; shift 2 ;;
     -*)
       echo "Unknown flag: $1"
       exit 1 ;;
@@ -34,8 +41,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Assembled once, after parsing — forwarded to the decide session.
+PROVIDER_FLAGS="--provider $PROVIDER -m $MODEL"
+
 if [[ -z "$REPORT_FILE" || ! -f "$REPORT_FILE" ]]; then
-  echo "Usage: argus-file-issues <report-file> [--local]"
+  echo "Usage: argus-file-issues <report-file> [--model NAME] [--provider NAME]"
   echo "Reports:"
   ls /opt/data/reports/ 2>/dev/null || echo "  (none found)"
   exit 1

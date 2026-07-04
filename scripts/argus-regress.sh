@@ -8,10 +8,13 @@
 # =true in /opt/data/.env) — a single replay has a real false-fixed rate, and
 # a wrongly closed issue silently vanishes from the board.
 #
-#   argus-regress --local              # sweep ALL open Argus issues, oldest first
-#   argus-regress 10173 10175 --local  # replay exactly these issues
-#   argus-regress --limit 5 --local    # first 5 (oldest) only
-#   argus-regress --close --local      # auto-close issues that appear fixed
+#   argus-regress                      # sweep ALL open Argus issues, oldest first
+#   argus-regress 10173 10175          # replay exactly these issues
+#   argus-regress --limit 5            # first 5 (oldest) only
+#   argus-regress --close              # auto-close issues that appear fixed
+#   argus-regress --provider auto -m gpt-4.1   # replay against a cloud model
+# Runs use the local qwen variant by default (--provider local -m qwen3.6-argus128k);
+# --model / --provider override it. --local is a back-compat no-op alias.
 #
 # Division of labour (same decide/execute split as argus-file-issues):
 #   SCRIPT: pulls issues via gh, parses viewport/persona out of each body,
@@ -39,7 +42,12 @@ ISSUE_NUMS=()
 LIMIT=""
 PERSONA_OVERRIDE=""
 MAX_TURNS=60
-PROVIDER_FLAGS=""
+# Model + provider both default to the local qwen variant and are independently
+# overridable (--model / --provider). Same baked-num_ctx rationale as argus-test
+# — see its header. PROVIDER_FLAGS is assembled after parsing; for a cloud box:
+# --provider auto -m gpt-4.1.
+PROVIDER="local"
+MODEL="qwen3.6-argus128k"
 # Per-issue wall-clock cap. A replay is a short, scripted walk (login + a few
 # steps + one screenshot) — far less than a QA session's 2400s.
 REGRESS_TIMEOUT="${REGRESS_TIMEOUT:-1200}"
@@ -49,11 +57,12 @@ CLOSE_FIXED="${CLOSE_FIXED:-false}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      # Same baked-num_ctx variant rationale as argus-test — see its header.
-      PROVIDER_FLAGS="--provider local -m qwen3.6-argus128k"
-      shift ;;
-    --model)
-      PROVIDER_FLAGS="--provider local -m $2"; shift 2 ;;
+      # Back-compat alias: local qwen is now the default, so this is a no-op.
+      PROVIDER="local"; MODEL="qwen3.6-argus128k"; shift ;;
+    --model|-m)
+      MODEL="$2"; shift 2 ;;
+    --provider)
+      PROVIDER="$2"; shift 2 ;;
     --max-turns)
       MAX_TURNS="$2"; shift 2 ;;
     --limit)
@@ -79,14 +88,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Assemble the provider flags forwarded to every replay session.
+PROVIDER_FLAGS="--provider $PROVIDER -m $MODEL"
+
 ARGUS_GITHUB_TOKEN="$(grep -E '^ARGUS_GITHUB_TOKEN=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 if [[ -z "$ARGUS_GITHUB_TOKEN" ]]; then
   echo "✗ ARGUS_GITHUB_TOKEN is not set in /opt/data/.env"
   exit 1
 fi
 
-if [[ -n "$PROVIDER_FLAGS" ]]; then
-  echo "▶ Checking Ollama connectivity..."
+if [[ "$PROVIDER" == "local" ]]; then
+  echo "▶ Checking Ollama connectivity ($MODEL)..."
   if ! curl -sf --max-time 3 http://localhost:11434/api/tags > /dev/null 2>&1; then
     echo "✗ Ollama is not reachable. Start it with: OLLAMA_HOST=0.0.0.0 ollama serve &"
     exit 1
