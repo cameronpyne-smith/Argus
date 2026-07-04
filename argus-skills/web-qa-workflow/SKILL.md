@@ -142,6 +142,35 @@ redirects you to a sign-in page:
 This covers standard form logins. SSO / passkey / captcha flows are out of scope
 unless the task says otherwise.
 
+## Deeper bug classes — where the bugs others miss actually live
+
+Malformed single-field input (above) is the shallow 30%. The bugs a senior QA
+finds are about STATE and SEQUENCE, not one field in isolation. On every area,
+pick the ones that fit and actually perform the sequence — reproduce the outcome,
+never infer it:
+
+- **Persistence across reloads.** Save data, then reload the page, navigate away
+  and back, or re-login. Data that silently disappears, reverts, or shows a stale
+  value is a bug.
+- **Full lifecycle.** Create → edit → delete a record, then try to use or undo it.
+  Does a deleted item still show in lists, dropdowns, counts, or totals? Can you
+  still open/edit something you just deleted?
+- **Interrupted / resumed flows.** Start a multi-step wizard, leave halfway
+  (navigate away, browser Back, reload), then return. Is partial state saved
+  sanely, or is it half-committed, duplicated, or silently lost?
+- **Back / forward / refresh / double-submit.** Use the browser Back button after
+  a submit, refresh a confirmation page, click submit twice, or go Back and
+  re-submit. Watch for duplicate records or a resurrected stale form.
+- **Conditional / dependent fields.** When one field changes what another allows
+  (country → address format, type → available options), change the driver AFTER
+  filling the dependent field and check the dependent updates or clears correctly.
+- **Error recovery.** Force a save to fail (invalid value, or a required field
+  blank), then fix it and continue. Is the form left consistent, or stuck /
+  duplicated / silently broken afterwards?
+- **Empty / boundary collections.** Filter or search to zero results, paginate
+  past the last page, sort an empty list. A blank screen with no empty-state
+  message is a bug.
+
 ## Access-control probes (the highest-severity, most-missed bugs)
 
 The worst bugs are usually authorization failures, not bad input — and automated
