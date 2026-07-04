@@ -50,6 +50,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_check": "execute",
     "browser_wait": "read",
     "browser_upload": "execute",
+    "browser_fill_form": "execute",
     # Agent internals
     "delegate_task": "execute",
     "vision_analyze": "read",
@@ -69,7 +70,7 @@ _POLISHED_TOOLS = {
     "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
     "browser_back", "browser_snapshot", "browser_console", "browser_get_images", "browser_vision",
-    "browser_select", "browser_check", "browser_wait", "browser_upload",
+    "browser_select", "browser_check", "browser_wait", "browser_upload", "browser_fill_form",
     "vision_analyze", "image_generate", "text_to_speech",
     # Schedulers / platform integrations
     "cronjob", "send_message", "clarify", "discord", "discord_admin",

@@ -23,10 +23,11 @@ summary: How to explore a web app, what counts as a bug, and how to report findi
    - Boundary values (0, -1, maximum allowed)
 
 4. **Actions return a fresh snapshot for you.** `browser_click`, `browser_type`,
-   `browser_select`, `browser_check`, `browser_wait`, `browser_scroll`, `browser_press`
-   and `browser_back` each include the resulting page snapshot in their result — read it
-   instead of spending a separate `browser_snapshot` call. Only call `browser_snapshot`
-   explicitly to refresh a page that changed on its own, or with `full=true` for complete content.
+   `browser_fill_form`, `browser_select`, `browser_check`, `browser_wait`, `browser_scroll`,
+   `browser_press` and `browser_back` each include the resulting page snapshot in their
+   result — read it instead of spending a separate `browser_snapshot` call. Only call
+   `browser_snapshot` explicitly to refresh a page that changed on its own, or with
+   `full=true` for complete content.
 
 5. **Exhaust alternatives before concluding something is broken.** If one approach fails, try another.
    A click that does nothing is worth retrying with a different method before reporting it.
@@ -34,6 +35,14 @@ summary: How to explore a web app, what counts as a bug, and how to report findi
    disabled or the ref stale; re-snapshot and try a different element rather than repeating the click.
 
 ## Interacting with forms
+
+**Filling more than one field? Use `browser_fill_form` — one call, not one per field.**
+It sets every field (and optionally clicks submit) in a single tool call, so a six-field
+form costs one turn instead of six. Pass `fields: [{ref, value, type}]` where `type` is
+`text` (default), `select`, or `checkbox` (`value` `"true"`/`"false"`), plus `submit_ref`
+to submit. It reports per-field results, so if a ref was stale you re-fill only that field.
+Reach for the single-field verbs below only when you are touching exactly one control or
+need to react to the page between fields.
 
 Use the right verb for each control — improvising with clicks on native controls often
 silently fails:
@@ -108,15 +117,19 @@ redirects you to a sign-in page:
 
 1. **Navigate** to the login URL from site-config.
 2. **Snapshot**, then find the **username/email** field, the **password** field,
-   and the **submit** button by their role/label. `browser_type` the credentials
-   into the two fields — `browser_type` fires the input events the page's
-   framework needs, so you never need raw `dispatchEvent`.
-3. **Verify the values stuck.** Read each field back (re-snapshot, or read its
-   value). If a field is still empty after typing, your ref was stale — refs
-   change after any page update. Re-snapshot and type into the NEW ref. A field
-   that "won't accept input" is almost always a stale ref, not a bug.
-4. **Submit** — `browser_click` the login button — then wait a couple of seconds
-   and check the URL. If you are **no longer on the sign-in page**, you are in.
+   and the **submit** button by their role/label. Fill both fields and submit in
+   ONE `browser_fill_form` call: `fields: [{ref: <user>, value: <email>}, {ref:
+   <pass>, value: <password>}]`, `submit_ref: <login button>`. This fires the
+   input events the page's framework needs (no raw `dispatchEvent`) and its
+   result reports whether each field took.
+3. **Verify the values stuck.** `browser_fill_form` reports any field that didn't
+   fill (a stale ref — refs change after any page update). If it lists a failed
+   field, re-snapshot and re-fill the NEW ref. A field that "won't accept input"
+   is almost always a stale ref, not a bug.
+4. **After submit** — the fill result includes the post-submit snapshot; wait a
+   couple of seconds if needed and check the URL. If you are **no longer on the
+   sign-in page**, you are in. (If you filled the fields separately instead, click
+   the login button with `browser_click`.)
 5. **Post-login interstitial.** If login lands on a setup / MFA / consent page
    that is not the app itself, find a **skip / later / dismiss / not now**
    control and click it. If there is genuinely no way past it, that is a real

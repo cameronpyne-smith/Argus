@@ -228,7 +228,8 @@ _LEGACY_TOOLSET_MAP = {
         "browser_type", "browser_scroll", "browser_back",
         "browser_press", "browser_get_images",
         "browser_vision", "browser_console",
-        "browser_select", "browser_check", "browser_wait", "browser_upload"
+        "browser_select", "browser_check", "browser_wait", "browser_upload",
+        "browser_fill_form"
     ],
     "cronjob_tools": ["cronjob"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],

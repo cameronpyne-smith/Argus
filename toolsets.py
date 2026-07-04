@@ -45,6 +45,7 @@ _HERMES_CORE_TOOLS = [
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     "browser_select", "browser_check", "browser_wait", "browser_upload",
+    "browser_fill_form",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -166,7 +167,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
             "browser_dialog", "browser_select", "browser_check",
-            "browser_wait", "browser_upload", "web_search"
+            "browser_wait", "browser_upload", "browser_fill_form", "web_search"
         ],
         "includes": []
     },
@@ -343,6 +344,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_select", "browser_check", "browser_wait", "browser_upload",
+            "browser_fill_form",
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
@@ -369,6 +371,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_select", "browser_check", "browser_wait", "browser_upload",
+            "browser_fill_form",
             # Planning & memory
             "todo", "memory",
             # Session history search

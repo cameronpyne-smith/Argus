@@ -1583,6 +1583,43 @@ BROWSER_TOOL_SCHEMAS = [
             "required": ["ref", "files"]
         }
     },
+    {
+        "name": "browser_fill_form",
+        "description": "Fill an ENTIRE form in ONE call — set many fields (and optionally submit) without a separate tool call per field. Much faster than repeated browser_type/browser_select/browser_check because it is a single turn. Each field is {ref, value, type}: type 'text' (default) fills an input/textarea, 'select' picks a dropdown option (value = label/value/index), 'checkbox' sets a checkbox/radio (value 'true'/'false'). Pass submit_ref to click the submit button after all fields are set (only clicked if every field succeeds). Returns one post-submit snapshot plus a per-field result so you can see exactly which fields took. Requires a snapshot first — refs come from it. Prefer this whenever you are filling two or more fields.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ref": {
+                                "type": "string",
+                                "description": "Element reference from the snapshot (e.g. '@e3')"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "Value to set: text for inputs; option label/value/index for selects; 'true' or 'false' for checkboxes."
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["text", "select", "checkbox"],
+                                "description": "Control kind. Defaults to 'text'."
+                            }
+                        },
+                        "required": ["ref", "value"]
+                    },
+                    "description": "The form fields to fill, in order."
+                },
+                "submit_ref": {
+                    "type": "string",
+                    "description": "Optional ref of the submit button to click after all fields are set (e.g. '@e10')."
+                }
+            },
+            "required": ["fields"]
+        }
+    },
 ]
 
 
@@ -3139,6 +3176,155 @@ def browser_upload(ref: str, files, task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def _as_check_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True  # a checkbox field listed with no value → check it
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "on", "check", "checked"}
+
+
+def browser_fill_form(fields, submit_ref: Optional[str] = None, task_id: Optional[str] = None) -> str:
+    """
+    Fill a whole form in ONE tool call, then optionally submit it.
+
+    Each field is a dict {"ref", "value", "type"}. This is the batch counterpart
+    of browser_type/browser_select/browser_check: it sets every field with a
+    single tool call — and therefore a single model turn — instead of one
+    per field, which is the dominant cost on a local model. Only ONE fused
+    snapshot is attached, at the very end (after submit), rather than one per
+    field, so the model sees the settled form once.
+
+    Each field's fill is verified: text fields are read back (an empty read-back
+    means the ref was stale — a silent no-op), and per-field outcomes are
+    reported so the model can re-fill only what failed rather than distrusting
+    the whole form. If any field fails, the form is NOT submitted.
+
+    Args:
+        fields: list of {"ref": "@e3", "value": ..., "type": "text"|"select"|"checkbox"}.
+            type defaults to "text" (fill an input/textarea). "select" picks a
+            dropdown option (value = label/value/index). "checkbox" sets a
+            checkbox/radio (value true/false; also matches "true"/"false").
+        submit_ref: optional ref of a submit button to click once all fields are
+            set (only clicked if every field succeeded).
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with per-field results and a single post-action snapshot.
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_fill_form is not supported on the Camofox backend",
+        }, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+
+    if not isinstance(fields, (list, tuple)) or not fields:
+        return json.dumps({
+            "success": False,
+            "error": "browser_fill_form requires a non-empty list of {ref, value} field objects",
+        }, ensure_ascii=False)
+    if len(fields) > 40:
+        return json.dumps({
+            "success": False,
+            "error": "browser_fill_form accepts at most 40 fields at once",
+        }, ensure_ascii=False)
+
+    filled = []
+    failed = []
+    for i, f in enumerate(fields):
+        if not isinstance(f, dict):
+            failed.append({"index": i, "error": "each field must be an object with 'ref' and 'value'"})
+            continue
+        raw_ref = str(f.get("ref", "")).strip()
+        if not raw_ref:
+            failed.append({"index": i, "error": "field is missing 'ref'"})
+            continue
+        ref = _normalize_ref(raw_ref)
+        kind = str(f.get("type") or f.get("kind") or "text").strip().lower()
+        value = f.get("value")
+
+        try:
+            _run_browser_command(effective_task_id, "scrollintoview", [ref], timeout=15)
+        except Exception:
+            pass
+
+        if kind in {"select", "dropdown", "combobox"}:
+            if isinstance(value, (list, tuple)):
+                vals = [str(v) for v in value]
+            else:
+                vals = [str(value)]
+            res = _run_browser_command(effective_task_id, "select", [ref] + vals)
+        elif kind in {"check", "checkbox", "radio", "toggle"}:
+            verb = "check" if _as_check_bool(value) else "uncheck"
+            res = _run_browser_command(effective_task_id, verb, [ref])
+        else:
+            text = "" if value is None else str(value)
+            res = _run_browser_command(effective_task_id, "fill", [ref, text])
+            # Same stale-ref read-back guard as browser_type: fill reports
+            # success even against a stale ref, leaving the field empty. Catch
+            # that here so a half-filled form is reported honestly, not as OK.
+            if res.get("success") and text.strip():
+                try:
+                    check = _run_browser_command(
+                        effective_task_id, "get", ["value", ref], timeout=10
+                    )
+                    if check.get("success"):
+                        got = check.get("data", {}).get("value")
+                        if isinstance(got, str) and got == "":
+                            res = {
+                                "success": False,
+                                "error": "fill had no effect — field still empty (ref likely stale)",
+                            }
+                except Exception:
+                    pass
+
+        if res.get("success"):
+            filled.append({"ref": ref, "kind": kind, "value": value})
+        else:
+            failed.append({"ref": ref, "kind": kind, "error": res.get("error", "failed")})
+
+    submitted = None
+    submit_error = None
+    if submit_ref and str(submit_ref).strip():
+        sref = _normalize_ref(str(submit_ref).strip())
+        if failed:
+            submit_error = "not submitted — one or more fields failed to fill (see 'failed')"
+        else:
+            try:
+                _run_browser_command(effective_task_id, "scrollintoview", [sref], timeout=15)
+            except Exception:
+                pass
+            sres = _run_browser_command(effective_task_id, "click", [sref])
+            if sres.get("success"):
+                submitted = sref
+            else:
+                submit_error = sres.get("error", f"failed to click submit {sref}")
+
+    response = {
+        "success": not failed and submit_error is None,
+        "filled": filled,
+        "field_count": len(fields),
+    }
+    if failed:
+        response["failed"] = failed
+        response["fill_hint"] = (
+            "Some fields did not take — their refs are almost certainly stale "
+            "(refs change after any DOM update). Take a fresh browser_snapshot "
+            "and re-fill ONLY the failed refs; this is a tool/ref issue, not a "
+            "site bug."
+        )
+    if submitted:
+        response["submitted"] = submitted
+    if submit_error:
+        response["submit_error"] = submit_error
+
+    _attach_post_action_snapshot(
+        effective_task_id, response, detect_no_change=bool(submitted)
+    )
+    return json.dumps(response, ensure_ascii=False)
+
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
@@ -4218,4 +4404,12 @@ registry.register(
     handler=lambda args, **kw: browser_upload(ref=args.get("ref", ""), files=args.get("files", []), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="📎",
+)
+registry.register(
+    name="browser_fill_form",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_fill_form"],
+    handler=lambda args, **kw: browser_fill_form(fields=args.get("fields", []), submit_ref=args.get("submit_ref"), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📝",
 )
