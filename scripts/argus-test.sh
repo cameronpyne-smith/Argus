@@ -533,6 +533,20 @@ for b in "$RUN_DIR"/bug-*.md; do
   fix_hosts "$b"
 done
 
+# De-poison the area notes before they are written back. Under context pressure
+# the model repeatedly "learns" a false workaround — that browser_type fails and
+# you must set values with raw JS el.value/dispatchEvent — and records it as a
+# quirk. That advice is wrong (JS bypasses the framework, so values that "save"
+# may not really save) and self-perpetuates: the next run reads the quirk and
+# repeats it. Strip those lines from area.md so they cannot propagate. The truth
+# (refs go stale → re-snapshot and retype) is already in the web-qa-workflow skill.
+de_poison() {
+  if [[ -f "$1" ]]; then
+    sed -E -i '/dispatchEvent/d; /[bB]rowser_type[^\n]*(fail|does *n.?.?t *work|do *not *work|won.?t *work|not *work)/d' "$1"
+  fi
+}
+de_poison "$RUN_DIR/area.md"
+
 # Write back the area notes (size-capped — the ledger holds state, not history).
 # --only runs are ledger-neutral: a narrow targeted run must NOT overwrite the
 # area's broad coverage notes (it only exercised one slice).
