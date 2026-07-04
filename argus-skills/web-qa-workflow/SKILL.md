@@ -142,6 +142,36 @@ redirects you to a sign-in page:
 This covers standard form logins. SSO / passkey / captcha flows are out of scope
 unless the task says otherwise.
 
+## Access-control probes (the highest-severity, most-missed bugs)
+
+The worst bugs are usually authorization failures, not bad input — and automated
+QA almost never looks for them. On any page that carries an **id in the URL** (an
+org UUID, a record id, `/organisations/<uuid>/…`, `/invoices/<id>`, `?id=123`),
+probe whether the app enforces who may see and do what:
+
+- **Mutate the id (IDOR).** Change an id in the current URL to a *different* one —
+  another id you saw elsewhere on the site, an adjacent value, or a well-formed
+  but foreign UUID — and navigate there while logged in as yourself. The correct
+  result is a clean denial: "not authorised", a redirect, or a 404. LEAKING
+  another party's data, or letting you act on it, is a **Critical** bug. A 500 /
+  stack trace on a foreign id is also a bug (information disclosure / missing
+  authz check).
+- **Cross-persona URLs.** site-config may list URLs or ids belonging to a
+  *different* persona than the one you logged in as. Navigate straight to one. You
+  should be denied; seeing that persona's data is Critical.
+- **Privileged actions from a lower-privilege account.** If your persona is not an
+  admin/owner, try to reach admin/owner-only pages or actions by their URL
+  directly. Reaching them is a bug; a clean denial is correct.
+- **Deep-link past a flow.** Jump straight to an inner/confirmation page without
+  the steps that normally precede it — is login/permission still enforced, or does
+  it render with stale or someone else's state?
+
+Stay within your own login — only ever authenticate with YOUR persona's real
+credentials from site-config. These probes are about reaching URLs and ids you
+are not meant to reach *while logged in as yourself*, never about logging in as
+someone else or guessing passwords. In the bug, record the exact id/URL you
+changed, from what to what, and precisely what leaked or errored.
+
 ## What Counts as a Bug
 
 - A field accepts and saves clearly invalid data (XSS string, negative salary)
