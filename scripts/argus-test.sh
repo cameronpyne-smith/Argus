@@ -8,25 +8,35 @@
 # History lives in /opt/data/reports/. The agent only ever sees the index's
 # chosen slice: its one area file, copied into /opt/data/run/.
 #
+# Model + provider: both default to the local qwen variant
+# (--provider local -m qwen3.6-argus128k) and are independently overridable:
+#   --model  <name>       inference model      (default qwen3.6-argus128k)
+#   --provider <name>     inference provider   (default local; built-in or a
+#                         name from providers: in config.yaml — 'auto' picks the
+#                         config default, e.g. cloud gpt-4.1)
+#   --local               back-compat alias — re-asserts the local defaults (no-op)
+# On a cloud/OpenAI box with no Ollama: --provider auto -m gpt-4.1 (see below).
+#
 # Usage:
 #   argus-test                      # pick the area most in need (never > oldest)
-#   argus-test expenses             # focus a specific area
-#   argus-test --focus expenses --persona default --local --issues
-#   argus-test --discover --local   # map the site: fill the index, no testing
-#   argus-test expenses --local --watch  # headed: watch it live in a browser window
+#   argus-test expenses             # focus a specific area (local qwen by default)
+#   argus-test --focus expenses --persona default --issues
+#   argus-test --discover           # map the site: fill the index, no testing
+#   argus-test expenses --watch     # headed: watch it live in a browser window
 #                                          (Option 1: shares host X; run `xhost +local:` first)
+#   argus-test expenses --provider auto --model gpt-4.1  # run against a cloud model
 #   argus-test expenses --prompt "test price fields for invalid chars + limits"
 #                                          # broad testing, but prioritise this instruction
 #   argus-test expenses --only   "test price fields for invalid chars + limits"
 #                                          # test ONLY this (ledger-neutral; no area.md/stamp update)
 #   (--prompt and --only are mutually exclusive and stay loaded in context all run.)
-#   argus-test dashboard --viewport mobile --local
+#   argus-test dashboard --viewport mobile
 #                                          # responsive pass at a mobile-size viewport
 #                                          # (mobile=390x844, tablet=820x1180, or custom WxH;
 #                                          #  ledger-neutral — desktop notes/stamp untouched)
 #
-# Prerequisite for --local (host-side, one-time): Ollama's /v1 endpoint ignores
-# per-request num_ctx, so --local uses a model variant with the context window
+# Prerequisite for local runs (host-side, one-time): Ollama's /v1 endpoint ignores
+# per-request num_ctx, so the local default uses a model variant with the context window
 # baked into its Modelfile. Create them once (they share blobs with the base):
 #   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 131072\n' | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus128k -f /tmp/mf
 #   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 65536\n'  | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus64k  -f /tmp/mf
@@ -39,8 +49,8 @@
 #   ARGUS_VISION_MODEL / ARGUS_VISION_BASE_URL / ARGUS_VISION_API_KEY
 # (ARGUS_NUM_CTX and ARGUS_LOCAL_MODEL live there too.)
 # Default = the local model on local Ollama (shares the resident model, no swap).
-# On a cloud/OpenAI box with no Ollama: run WITHOUT --local (main -> gpt-4.1 via
-# the config default) and set the three vision env vars to your provider, e.g.
+# On a cloud/OpenAI box with no Ollama: run with --provider auto -m gpt-4.1 (main
+# -> gpt-4.1 via the config default) and set the three vision env vars, e.g.
 #   ARGUS_VISION_MODEL=gpt-4.1  ARGUS_VISION_BASE_URL=https://api.openai.com/v1  ARGUS_VISION_API_KEY=sk-...
 # (gpt-4.1/4o are multimodal, so vision is real). Also ensure the OpenAI key is in
 # config.yaml's OpenAI provider, since that's not committed.
@@ -73,7 +83,15 @@ PERSONA="candidate"
 # babysitter continuation restarts with freshly compressed context (~10-20K),
 # so many short sessions beat one long one. Override with --max-turns.
 MAX_TURNS=120
-PROVIDER_FLAGS=""
+# Model + provider both default to the local qwen variant and are independently
+# overridable (--model / --provider). qwen3.6-argus128k = qwen3.6:35b with
+# PARAMETER num_ctx 131072 baked in — Ollama's /v1 (OpenAI-compat) endpoint
+# IGNORES per-request num_ctx, so a baked variant is the ONLY way to run >32768.
+# Keep the model in sync with context_length (entrypoint ARGUS_NUM_CTX) and the
+# vision model (entrypoint ARGUS_LOCAL_MODEL). PROVIDER_FLAGS is assembled from
+# these after arg parsing. For a cloud box: --provider auto -m gpt-4.1.
+PROVIDER="local"
+MODEL="qwen3.6-argus128k"
 # Hard wall-clock cap per agent session — the backstop for a hung model call
 # (a qwen stream once stalled mid-response and never returned). timeout sends
 # SIGTERM (not SIGINT: SIGINT triggers Hermes' graceful shutdown which itself
@@ -91,17 +109,16 @@ FILE_ISSUES="${FILE_ISSUES:-false}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      # qwen3.6-argus128k = qwen3.6:35b with PARAMETER num_ctx 131072 baked in.
-      # Ollama's /v1 (OpenAI-compat) endpoint IGNORES per-request num_ctx, so the
-      # ONLY way to run >32768 (Ollama's /v1 default) is a model whose Modelfile
-      # bakes num_ctx. Keep this in sync with context_length (entrypoint
-      # ARGUS_NUM_CTX) and the vision model (entrypoint ARGUS_LOCAL_MODEL).
-      PROVIDER_FLAGS="--provider local -m qwen3.6-argus128k"
-      shift ;;
-    --model)
-      # local ollama model override, e.g. --model qwen3.6:35b
-      PROVIDER_FLAGS="--provider local -m $2"
-      shift 2 ;;
+      # Back-compat alias: the local qwen variant is now the default, so this
+      # just re-asserts it. Prefer --provider/--model directly.
+      PROVIDER="local"; MODEL="qwen3.6-argus128k"; shift ;;
+    --model|-m)
+      # Inference model, e.g. --model qwen3.6:35b or (with --provider auto) gpt-4.1
+      MODEL="$2"; shift 2 ;;
+    --provider)
+      # Inference provider: built-in or a name from providers: in config.yaml.
+      # 'auto' resolves to the config default (cloud gpt-4.1 on a no-Ollama box).
+      PROVIDER="$2"; shift 2 ;;
     --max-turns)
       MAX_TURNS="$2"; shift 2 ;;
     --focus)
@@ -155,6 +172,9 @@ while [[ $# -gt 0 ]]; do
       FOCUS="$1"; shift ;;
   esac
 done
+
+# Assemble the provider flags forwarded to every `argus chat` (and the filer).
+PROVIDER_FLAGS="--provider $PROVIDER -m $MODEL"
 
 # Guidance (--prompt/--only) steers a QA run; it has no meaning for discovery.
 if [[ -n "$GUIDE_MODE" && "${DISCOVER:-false}" == "true" ]]; then
@@ -212,8 +232,8 @@ fi
 
 source /opt/hermes/.venv/bin/activate
 
-if [[ -n "$PROVIDER_FLAGS" ]]; then
-  echo "▶ Checking Ollama connectivity..."
+if [[ "$PROVIDER" == "local" ]]; then
+  echo "▶ Checking Ollama connectivity ($MODEL)..."
   if ! curl -sf --max-time 3 http://localhost:11434/api/tags > /dev/null 2>&1; then
     echo "✗ Ollama is not reachable. Start it with: OLLAMA_HOST=0.0.0.0 ollama serve &"
     exit 1
