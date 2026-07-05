@@ -158,7 +158,13 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
-    
+
+    "skills_ro": {
+        "description": "Read-only access to skill documents (list and view only, no create/edit/delete)",
+        "tools": ["skills_list", "skill_view"],
+        "includes": []
+    },
+
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [

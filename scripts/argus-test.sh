@@ -381,7 +381,7 @@ if [[ "$DISCOVER" == "true" ]]; then
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
-    -t browser,skills,file,terminal \
+    -t browser,skills_ro,file,terminal \
     -q "You are mapping the ${SITE} web app so it can be QA-tested area by area later. You are logged in as persona '${PERSONA}'. Your job this run is DISCOVERY ONLY — find pages, do not test them.
 
 Before you start:
@@ -410,7 +410,7 @@ else
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
-  -t browser,skills,file,terminal \
+  -t browser,skills_ro,file,terminal \
   -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.${GUIDE_BLOCK}${VIEWPORT_BLOCK}
 
 Before you start:
@@ -487,7 +487,7 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 8 ]]; do
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --continue --max-turns 150 \
-    -t browser,skills,file,terminal \
+    -t browser,skills_ro,file,terminal \
     -q "$NUDGE_PROMPT" \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
   echo ""

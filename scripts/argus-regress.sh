@@ -327,7 +327,7 @@ Your final message comes only after verdict.md is written."
   # shellcheck disable=SC2086
   env "${VP_ENV[@]}" timeout --signal=TERM --kill-after=30 "$REGRESS_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
-    -t browser,skills,file,terminal \
+    -t browser,skills_ro,file,terminal \
     -q "$REGRESS_PROMPT" \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing"
 
@@ -338,7 +338,7 @@ Your final message comes only after verdict.md is written."
     # shellcheck disable=SC2086
     env "${VP_ENV[@]}" timeout --signal=TERM --kill-after=30 "$REGRESS_TIMEOUT" \
       argus chat --continue --max-turns "$MAX_TURNS" \
-      -t browser,skills,file,terminal \
+      -t browser,skills_ro,file,terminal \
       -q "$NUDGE_PROMPT" \
       $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing"
   done
