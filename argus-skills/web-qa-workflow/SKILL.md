@@ -170,6 +170,17 @@ never infer it:
 - **Full lifecycle.** Create → edit → delete a record, then try to use or undo it.
   Does a deleted item still show in lists, dropdowns, counts, or totals? Can you
   still open/edit something you just deleted?
+- **Cross-view consistency.** The same data is usually shown in more than one
+  place — a count or total on a dashboard vs the actual rows in the list, a value
+  in a list row vs that record's detail page, an option in a dropdown vs the table
+  it comes from, a badge vs the thing it counts. After ANY create, edit or delete,
+  read at least two views of the affected data and check they still AGREE. A count
+  that doesn't update, a deleted item lingering in a dropdown, a total that
+  disagrees with its line items, a detail page showing a different value than the
+  list — these are stale / derived-state bugs, and they are invisible if you only
+  look at the one view you just changed. This is a general oracle: you don't need a
+  visible error to call it a bug — two views of the same fact that disagree IS the
+  bug.
 - **Interrupted / resumed flows.** Start a multi-step wizard, leave halfway
   (navigate away, browser Back, reload), then return. Is partial state saved
   sanely, or is it half-committed, duplicated, or silently lost?
