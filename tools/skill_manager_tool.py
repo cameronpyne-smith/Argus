@@ -574,6 +574,26 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
+    # Defense in depth: never let a skill_manage call hard-delete a bundled or
+    # hub-installed skill. Only agent-created skills (e.g. the curator's
+    # consolidation pass) may be deleted here. A QA run once deleted its own
+    # bundled guidance skill mid-session via this path, blinding the rest of the
+    # run — deletion of provided skills must go through the user, not the agent.
+    try:
+        from tools.skill_usage import is_agent_created
+        if not is_agent_created(name):
+            return {
+                "success": False,
+                "error": (
+                    f"Skill '{name}' is bundled or hub-installed and cannot be "
+                    f"deleted with skill_manage — only agent-created skills may "
+                    f"be deleted. If removal is truly intended, the user should "
+                    f"delete its directory directly."
+                ),
+            }
+    except Exception:
+        logger.debug("agent-created check failed for %s during delete", name, exc_info=True)
+
     # Validate absorbed_into target when declared non-empty
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
         target_name = absorbed_into.strip()

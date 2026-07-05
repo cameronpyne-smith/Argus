@@ -147,6 +147,31 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Pin the copied QA skills so an agent's skill_manage(action=delete) cannot
+# hard-rmtree them mid-run — a QA run once deleted its own web-qa-workflow
+# guidance skill this way, blinding the rest of the session. Pin state lives in
+# the usage sidecar, which (unlike the sync manifest) survives skills_sync's
+# reconciliation at both entrypoint and gateway startup — registering them as
+# "bundled" in the manifest does NOT stick because gateway-startup skills_sync
+# re-cleans any manifest name absent from the repo bundle. _pinned_guard in
+# skill_manage refuses deletion of pinned skills.
+if [ -d "$INSTALL_DIR/argus-skills" ]; then
+    QA_SKILL_NAMES=$(find "$INSTALL_DIR/argus-skills" -name SKILL.md -exec sh -c 'basename "$(dirname "$1")"' _ {} \;)
+    if [ -n "$QA_SKILL_NAMES" ]; then
+        (cd "$INSTALL_DIR" && python3 - "$QA_SKILL_NAMES" <<'PYEOF'
+import sys
+from tools.skill_usage import set_pinned
+for name in sys.argv[1].split():
+    try:
+        set_pinned(name, True)
+        print(f"entrypoint: pinned QA skill '{name}' (protected from agent deletion)")
+    except Exception as e:
+        print(f"entrypoint: WARN could not pin '{name}': {e}")
+PYEOF
+        ) || echo "entrypoint: WARN QA-skill pinning step failed"
+    fi
+fi
+
 # Remove the nested qa/ skill tree from the data volume. The QA skills were
 # already flattened into /skills/<name>/ above; leaving the nested copies in
 # place makes skill names ambiguous ("2 skills match") and skill_view refuses
