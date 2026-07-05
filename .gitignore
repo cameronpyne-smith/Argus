@@ -80,3 +80,6 @@ docs/superpowers/*
 # Temp
 copilot-context.md
 agent-config/login-*.js
+
+# Local project instructions (personal, not shared)
+/CLAUDE.md
