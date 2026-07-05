@@ -34,6 +34,9 @@
 #                                          # responsive pass at a mobile-size viewport
 #                                          # (mobile=390x844, tablet=820x1180, or custom WxH;
 #                                          #  ledger-neutral — desktop notes/stamp untouched)
+#   argus-test expenses --no-verify         # skip the independent verification pass
+#   argus-test expenses --verify-model gpt-4.1 --verify-provider auto
+#                                          # re-check recorded bugs with a stronger judge model
 #
 # Prerequisite for local runs (host-side, one-time): Ollama's /v1 endpoint ignores
 # per-request num_ctx, so the local default uses a model variant with the context window
@@ -109,6 +112,25 @@ RECORD=false
 FILE_ISSUES="$(grep -E '^ARGUS_FILE_ISSUES=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
 FILE_ISSUES="${FILE_ISSUES:-false}"
 
+# Independent verification pass (default ON for QA runs). The exploration
+# session files a bug the moment it sees odd behaviour, and a small model
+# readily talks itself into false criticals — a disabled Vaadin button it reads
+# as "frozen", a light-DOM querySelectorAll it reads as a "DOM crash", escaped
+# HTML it reads as stored XSS. Its own "verify a bug is real" step is
+# self-verification inside the same reasoning that produced the bug, so it does
+# not catch these. After exploration, a FRESH skeptical session re-reproduces
+# each recorded bug from scratch (default verdict = reject) and returns keep /
+# downgrade / reject. Disable with --no-verify or ARGUS_VERIFY=false.
+VERIFY="$(grep -E '^ARGUS_VERIFY=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+VERIFY="${VERIFY:-true}"
+# The verify pass can run on a different (stronger) model than exploration —
+# candidates are few, so a better judge here is cheap. Defaults to the run's
+# model/provider; override with --verify-model / --verify-provider.
+VERIFY_MODEL=""
+VERIFY_PROVIDER=""
+VERIFY_SESSION_TIMEOUT="${VERIFY_SESSION_TIMEOUT:-1200}"
+VERIFY_MAX_TURNS="${VERIFY_MAX_TURNS:-60}"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
@@ -169,6 +191,14 @@ while [[ $# -gt 0 ]]; do
       FILE_ISSUES=true; shift ;;
     --no-issues)
       FILE_ISSUES=false; shift ;;
+    --verify)
+      VERIFY=true; shift ;;
+    --no-verify)
+      VERIFY=false; shift ;;
+    --verify-model)
+      VERIFY_MODEL="$2"; shift 2 ;;
+    --verify-provider)
+      VERIFY_PROVIDER="$2"; shift 2 ;;
     -*)
       echo "Unknown flag: $1"; exit 1 ;;
     *)
@@ -178,6 +208,13 @@ done
 
 # Assemble the provider flags forwarded to every `argus chat` (and the filer).
 PROVIDER_FLAGS="--provider $PROVIDER -m $MODEL"
+
+# The verification pass defaults to the run's model/provider unless overridden
+# (--verify-model / --verify-provider), so a stronger judge can re-check bugs
+# while exploration stays on the fast local model.
+VERIFY_MODEL="${VERIFY_MODEL:-$MODEL}"
+VERIFY_PROVIDER="${VERIFY_PROVIDER:-$PROVIDER}"
+VERIFY_FLAGS="--provider $VERIFY_PROVIDER -m $VERIFY_MODEL"
 
 # Guidance (--prompt/--only) steers a QA run; it has no meaning for discovery.
 if [[ -n "$GUIDE_MODE" && "${DISCOVER:-false}" == "true" ]]; then
@@ -541,6 +578,116 @@ for b in "$RUN_DIR"/bug-*.md; do
   [[ -f "$b" ]] || continue
   fix_hosts "$b"
 done
+
+# ── Independent verification pass ──────────────────────────────────────────
+# Re-check each recorded bug in a FRESH session (clean context, fresh browser,
+# skeptical prompt, default = reject) that must INDEPENDENTLY reproduce the
+# broken behaviour from scratch — this is what the exploration session's own
+# self-verification cannot do, because it reasons from the same premises that
+# produced the bug. Verdicts: confirmed (keep), downgrade (keep, lower
+# severity), reject (moved to rejected/, excluded from report + filing). Each
+# surviving bug gets a 'Verification:' provenance line. Disable with --no-verify.
+if [[ "$VERIFY" == "true" && "$DISCOVER" != "true" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+  echo ""
+  echo "▶ Verification pass (${VERIFY_PROVIDER}/${VERIFY_MODEL}): independently re-checking each recorded bug in a fresh session..."
+  mkdir -p "$RUN_DIR/rejected"
+  for b in "$RUN_DIR"/bug-*.md; do
+    [[ -f "$b" ]] || continue
+    slug="$(basename "$b" .md)"
+    verdict_file="$RUN_DIR/verdict-${slug}.txt"
+    rm -f "$verdict_file"
+    bug_title="$(head -1 "$b" | sed 's/^#*[[:space:]]*//')"
+    echo "  • verifying: ${bug_title}"
+
+    VERIFY_PROMPT="You are a SKEPTICAL senior QA reviewer doing an independent second look at ONE bug another tester filed. Decide whether it is REAL by reproducing it YOURSELF from scratch — do not trust the report. Your default verdict is REJECT: only confirm a bug you can independently reproduce, where the app genuinely misbehaves AND the filed 'expected behaviour' is actually correct.
+
+Do NOT ask anything — you are autonomous.
+
+Before you start:
+- Load these skills with skill_view: 'site-config', 'web-qa-workflow'. Study the web-qa-workflow skill's 'How to Verify a Bug is Real' section and its false-positive guidance.
+- Read the filed bug with read_file: ${b}
+
+Then:
+1. ${LOGIN_STEP}
+2. Follow the bug's OWN 'Steps to reproduce' exactly, in a fresh browser, from the URL it gives. browser_snapshot before every action, and confirm each field holds a COMMITTED value before you judge anything.
+3. Apply these known false-positive traps — if the 'bug' is one of them, the verdict is REJECT:
+   - A button that is disabled or 'does nothing' is almost always a stale ref or an uncommitted REQUIRED field (especially a Vaadin combobox that needs a real selection), NOT a bug. Re-snapshot for a fresh ref and confirm every required field shows a committed value. NEVER force a control with JavaScript, and never conclude 'frozen/unresponsive' from a JS-dispatched click.
+   - document.querySelectorAll('input') returning 0 or few elements is NOT a DOM crash: this is a Vaadin app whose inputs live inside shadow DOM, invisible to a light-DOM query. Judge the page by what browser_snapshot shows and whether you can actually type into the fields — never by a raw querySelector count.
+   - Escaped HTML shown on screen (e.g. the literal text &lt;script&gt;) is CORRECT sanitization, not stored XSS. Only a payload that actually executes or renders as live markup is a real XSS.
+   - Pre-existing odd records (titles containing script tags, extreme amounts, 'XSS Test', garbage strings) are leftover test data from earlier QA runs — their mere presence is NOT a bug.
+   - A redirect to /login mid-flow, or a field that won't accept text on the first try, is routine (session/stale ref): log in again or re-snapshot. Never file it.
+4. If the app genuinely misbehaves and the expected behaviour is right but the real impact is milder than filed, choose DOWNGRADE and give the correct severity.
+
+Your FINAL action must be to write the verdict with write_file to ${verdict_file}, containing EXACTLY these lines and nothing else:
+VERDICT: <confirmed|downgrade|reject>
+SEVERITY: <Critical|High|Medium|Low>   (include ONLY when VERDICT is downgrade)
+REASON: <one line: what you observed on re-test and why>
+
+Write that file, then stop. Do not record new bugs and do not test anything beyond this one bug."
+
+    vn=0
+    while [[ ! -f "$verdict_file" && $vn -le 2 ]]; do
+      if [[ $vn -eq 0 ]]; then
+        # shellcheck disable=SC2086
+        timeout --signal=TERM --kill-after=30 "$VERIFY_SESSION_TIMEOUT" \
+          argus chat --max-turns "$VERIFY_MAX_TURNS" \
+          -t browser,skills_ro,file \
+          -q "$VERIFY_PROMPT" \
+          $VERIFY_FLAGS || echo "    ⚠ verify session exited abnormally"
+      else
+        # shellcheck disable=SC2086
+        timeout --signal=TERM --kill-after=30 "$VERIFY_SESSION_TIMEOUT" \
+          argus chat --continue --max-turns "$VERIFY_MAX_TURNS" \
+          -t browser,skills_ro,file \
+          -q "You have not written the verdict yet. Finish now: reach a verdict on the one bug you were re-checking and write_file to ${verdict_file} EXACTLY the lines 'VERDICT: <confirmed|downgrade|reject>', then 'SEVERITY: <level>' ONLY if downgrade, then 'REASON: <one line>'. Write that file and stop." \
+          $VERIFY_FLAGS || echo "    ⚠ verify continuation exited abnormally"
+      fi
+      vn=$((vn + 1))
+    done
+
+    if [[ ! -f "$verdict_file" ]]; then
+      echo "    ? no verdict written — keeping bug, marked unverified"
+      if ! grep -qi '^Verification:' "$b"; then
+        printf '\nVerification: NOT verified — the verifier session produced no verdict; treat with caution.\n' >> "$b"
+      fi
+      continue
+    fi
+
+    v="$(grep -iE '^VERDICT:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z')"
+    reason="$(grep -iE '^REASON:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+    case "$v" in
+      *reject*)
+        echo "    ✗ REJECTED — ${reason:-no reason given}"
+        printf '\nVerification: REJECTED on independent re-test — %s\n' "${reason:-no reason given}" >> "$b"
+        mv "$b" "$RUN_DIR/rejected/$(basename "$b")" 2>/dev/null || true
+        ;;
+      *downgrade*)
+        newsev="$(grep -iE '^SEVERITY:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -cd 'A-Za-z')"
+        if [[ -n "$newsev" ]]; then
+          oldsev="$(grep -iE '^Severity:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+          sed -i "s/^[Ss][Ee][Vv][Ee][Rr][Ii][Tt][Yy]:.*/Severity: ${newsev}/" "$b"
+          echo "    ↓ DOWNGRADED ${oldsev:-?} → ${newsev} — ${reason:-no reason given}"
+          printf '\nVerification: severity downgraded from %s to %s on independent re-test — %s\n' "${oldsev:-?}" "$newsev" "${reason:-no reason given}" >> "$b"
+        else
+          echo "    ↓ downgrade verdict but no severity given — keeping as-is, marked reviewed"
+          printf '\nVerification: reviewed on re-test (downgrade requested without a level) — %s\n' "${reason:-no reason given}" >> "$b"
+        fi
+        ;;
+      *confirm*)
+        echo "    ✓ CONFIRMED — ${reason:-reproduced}"
+        printf '\nVerification: confirmed on independent re-test — %s\n' "${reason:-reproduced}" >> "$b"
+        ;;
+      *)
+        echo "    ? unrecognised verdict '${v}' — keeping bug, marked unverified"
+        printf '\nVerification: verdict unclear on re-test — treat with caution.\n' >> "$b"
+        ;;
+    esac
+  done
+
+  KEPT=$(find "$RUN_DIR" -maxdepth 1 -name 'bug-*.md' 2>/dev/null | wc -l | tr -d ' ')
+  REJECTED_N=$(find "$RUN_DIR/rejected" -maxdepth 1 -name 'bug-*.md' 2>/dev/null | wc -l | tr -d ' ')
+  echo "▶ Verification complete: ${KEPT} kept, ${REJECTED_N} rejected (rejected bugs archived in rejected/, excluded from the report)."
+fi
 
 # De-poison the area notes before they are written back. Under context pressure
 # the model repeatedly "learns" a false workaround — that browser_type fails and
