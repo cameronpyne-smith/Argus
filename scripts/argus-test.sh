@@ -395,6 +395,25 @@ else
   printf '# %s\n\nNo notes on this area yet — first visit. Explore and record what you find.\n' "$AREA" > "$RUN_DIR/area.md"
 fi
 
+# ── Known-issues frontier feed ─────────────────────────────────────────────
+# Per-area, harness-owned list of bugs ALREADY found+verified+filed (populated
+# after each run's verification pass, below). Injected into the goal + nudges so
+# the run recognises what is already tracked and spends its effort on NEW ground
+# instead of re-finding and re-filing the same defects every run — the exact
+# convergence + duplicate-filing trap. Populated ONLY from confirmed/kept bugs
+# (never the model's free-text area notes, which can carry rejected false
+# positives), so it stays high-precision. Not injected for --only runs: they are
+# narrowly scoped and must not be steered toward broad new-ground exploration.
+KNOWN_BLOCK=""
+KNOWN_NUDGE_LINE=""
+if [[ "$DISCOVER" != "true" && "$GUIDE_MODE" != "only" && -s "$SITE_DIR/$AREA.known.md" ]]; then
+  cp "$SITE_DIR/$AREA.known.md" "$RUN_DIR/known-issues.md"
+  KNOWN_BLOCK="
+ALREADY-FILED BUGS FOR THIS AREA — read /opt/data/run/known-issues.md early with read_file. Every line is a bug that was already found, independently verified, and filed on a previous run. Do NOT re-report, re-record, or re-verify any of them — they are already tracked. If you stumble back onto one, that is expected: note it in one line and move on. Your value THIS run is NEW ground — steer your testing and your own hypotheses toward angles these known bugs did NOT cover (untested features, different state, different sequences). Re-confirming an already-filed bug adds nothing; finding a genuinely new one is the whole point.
+"
+  KNOWN_NUDGE_LINE=" Remember: /opt/data/run/known-issues.md lists bugs ALREADY filed for this area — do not re-record those; put your remaining effort into NEW, untested surface."
+fi
+
 if [[ "$DISCOVER" == "true" ]]; then
   echo "▶ Discovery run: site=${SITE} persona=${PERSONA} (max turns: ${MAX_TURNS})"
 else
@@ -443,12 +462,12 @@ When you have walked all navigation — or are running low on turns:
 - Print the list of newly discovered areas as your final message." \
     $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
 else
-  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). Do NOT write /opt/data/run/summary.md until every applicable deep-coverage item from your original instructions has been attempted OR recorded as blocked and you have THEN tested your own 3 hypotheses (see below). Work them in this order: (1) authorization — mutate any id in the URL and navigate to the cross-persona URLs from site-config; (2) persistence across reload; (3) browser back/forward/refresh; (4) double-submit; (5) full create→edit→delete lifecycle. Treat each item as independent: if a feature is broken and blocks its item, record that bug ONCE, mark the item blocked, and MOVE ON — do not get stuck re-testing it across continuations. A button that does nothing or stays disabled is usually a stale ref or an uncommitted required field, not a bug — re-snapshot and confirm committed values before filing, and never force it with JavaScript. Once every item is attempted or blocked, do NOT stop: form your OWN 3 specific hypotheses about where THIS app is likely broken in ways the checklist misses (pick angles previous runs did not try) and test each in the browser, recording any bug. Only THEN rewrite /opt/data/run/area.md (current facts, what remains untested, and the 3 hypotheses you tested so they are not repeated; max 50 lines) and write /opt/data/run/summary.md (each item's outcome plus each hypothesis and its result).${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}"
+  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue testing the '${AREA}' area per your original instructions. Record every confirmed bug with write_file to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). Do NOT write /opt/data/run/summary.md until every applicable deep-coverage item from your original instructions has been attempted OR recorded as blocked and you have THEN tested your own 3 hypotheses (see below). Work them in this order: (1) authorization — mutate any id in the URL and navigate to the cross-persona URLs from site-config; (2) persistence across reload; (3) browser back/forward/refresh; (4) double-submit; (5) full create→edit→delete lifecycle. Treat each item as independent: if a feature is broken and blocks its item, record that bug ONCE, mark the item blocked, and MOVE ON — do not get stuck re-testing it across continuations. A button that does nothing or stays disabled is usually a stale ref or an uncommitted required field, not a bug — re-snapshot and confirm committed values before filing, and never force it with JavaScript. Once every item is attempted or blocked, do NOT stop: form your OWN 3 specific hypotheses about where THIS app is likely broken in ways the checklist misses (pick angles previous runs did not try) and test each in the browser, recording any bug. Only THEN rewrite /opt/data/run/area.md (current facts, what remains untested, and the 3 hypotheses you tested so they are not repeated; max 50 lines) and write /opt/data/run/summary.md (each item's outcome plus each hypothesis and its result).${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}${KNOWN_NUDGE_LINE}"
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
   -t browser,skills_ro,file,terminal \
-  -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.${GUIDE_BLOCK}${VIEWPORT_BLOCK}
+  -q "You are an autonomous QA engineer testing the '${AREA}' area of the ${SITE} web app, logged in as persona '${PERSONA}'.${GUIDE_BLOCK}${VIEWPORT_BLOCK}${KNOWN_BLOCK}
 
 Before you start:
 - Load these skills with skill_view: 'site-config', 'web-qa-workflow'
@@ -464,7 +483,7 @@ Rules:
 - The browser console is only for confirming a UI bug you already observed. Do not spend turns analysing console logs, network requests or backend endpoints on their own.
 - Use browser_snapshot to read pages. Call browser_vision only to capture a bug screenshot or when the snapshot genuinely cannot show something visual — its output is huge and crowds out your context.
 - Start with the 'What remains untested' items in area.md and exhaust those first; then keep going deeper. Use different test inputs than previous runs.
-- Do NOT stop at basic input validation — that is the shallow layer. Deliberately exercise the deeper bug classes and access-control probes described in the web-qa-workflow skill: persistence across reload/re-login, the full create→edit→delete lifecycle, interrupted/resumed wizards, browser back/forward and double-submit, dependent-field transitions, error recovery, cross-view consistency (after any create/edit/delete, read at least two views of the same data — counts, lists, detail pages, dropdowns — and confirm they still agree; two views that disagree is itself the bug, no visible error needed), and mutating an id in the URL (or navigating to a cross-persona URL from site-config) to test authorization. These are where the bugs shallow testing misses actually live — spend real effort here.
+- Do NOT stop at basic input validation — that is the shallow layer. Deliberately exercise the deeper bug classes and access-control probes described in the web-qa-workflow skill: persistence across reload/re-login, the full create→edit→delete lifecycle, interrupted/resumed wizards, browser back/forward and double-submit, dependent-field transitions, error recovery, cross-view consistency (after any create/edit/delete, read at least two views of the same data — counts, lists, detail pages, dropdowns — and confirm they still agree; two views that disagree is itself the bug, no visible error needed), round-trip fidelity (after saving an awkward value — long, unicode, high-precision, an edge date — reload the record and confirm what comes back equals EXACTLY what you typed; silent truncation, rounding, dropped special characters or timezone shifts are the bug even with no error shown), and mutating an id in the URL (or navigating to a cross-persona URL from site-config) to test authorization. These are where the bugs shallow testing misses actually live — spend real effort here.
 
 Process:
 1. ${LOGIN_STEP}
@@ -583,6 +602,58 @@ for b in "$RUN_DIR"/bug-*.md; do
   fix_hosts "$b"
 done
 
+# ── Within-run dedup ───────────────────────────────────────────────────────
+# The exploration session files the SAME defect under several slugs — the last
+# validation recorded one edit-URL-500 bug three times (bug-edit-500,
+# bug-expense-edit-error, bug-edit-route-broken), and the verifier then confirmed
+# each copy independently, inflating the count and the filing. Merge duplicates
+# BEFORE verification so we don't spend a fresh verify session per copy. The rule
+# is deliberately HIGH-PRECISION so it never merges two genuinely different bugs
+# on the same page: two bugs collapse only when their URLs normalise to the same
+# path AND they share the same HTTP error code (500/404/403/…); with no shared
+# code they must share a near-identical normalised title. Extras are moved to
+# run/duplicates/ (excluded from the report + filing) with a note folded into the
+# survivor, and every merge is logged — never a silent drop.
+norm_url() {  # strip scheme+host, query, and id-ish path segments
+  printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E "s#^https?://[^/]+##; s/\?.*\$//; s#/[0-9a-f]{8}-[0-9a-f-]{4,}#/:id#g; s#/[0-9]+#/:id#g; s#/+\$##"
+}
+if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+  mkdir -p "$RUN_DIR/duplicates"
+  declare -A DEDUP_CANON
+  MERGED=0
+  for b in "$RUN_DIR"/bug-*.md; do
+    [[ -f "$b" ]] || continue
+    url="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+    nurl="$(norm_url "$url")"
+    # Only trust a numeric code as an HTTP-error symptom when the bug text is
+    # actually about an error — otherwise a "£500" amount field would collide
+    # with a genuine HTTP 500 on the same page and be wrongly merged.
+    code=""
+    if grep -qiE 'error|oops|internal server|dynamically imported|stack trace|http [0-9]|status code|crash|blank' "$b" 2>/dev/null; then
+      code="$(grep -hoE '\b(403|404|500|502|503)\b' "$b" 2>/dev/null | head -1)"
+    fi
+    tkey="$(head -1 "$b" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
+    if [[ -n "$code" ]]; then
+      key="${nurl}##${code}"
+    else
+      key="${nurl}##${tkey}"
+    fi
+    canon="${DEDUP_CANON[$key]:-}"
+    if [[ -n "$canon" && -f "$canon" ]]; then
+      dtitle="$(head -1 "$b" | sed 's/^#*[[:space:]]*//')"
+      printf '\nAlso recorded this run as a duplicate (merged): %s — %s\n' "$dtitle" "${url:-?}" >> "$canon"
+      mv "$b" "$RUN_DIR/duplicates/$(basename "$b")" 2>/dev/null || true
+      MERGED=$((MERGED + 1))
+      echo "  ⧉ merged duplicate: $(basename "$b") → $(basename "$canon")"
+    else
+      DEDUP_CANON[$key]="$b"
+    fi
+  done
+  if [[ $MERGED -gt 0 ]]; then
+    echo "▶ Dedup: merged ${MERGED} duplicate bug file(s) into their canonical bug (archived in duplicates/)."
+  fi
+fi
+
 # ── Independent verification pass ──────────────────────────────────────────
 # Re-check each recorded bug in a FRESH session (clean context, fresh browser,
 # skeptical prompt, default = reject) that must INDEPENDENTLY reproduce the
@@ -691,6 +762,48 @@ Write that file, then stop. Do not record new bugs and do not test anything beyo
   KEPT=$(find "$RUN_DIR" -maxdepth 1 -name 'bug-*.md' 2>/dev/null | wc -l | tr -d ' ')
   REJECTED_N=$(find "$RUN_DIR/rejected" -maxdepth 1 -name 'bug-*.md' 2>/dev/null | wc -l | tr -d ' ')
   echo "▶ Verification complete: ${KEPT} kept, ${REJECTED_N} rejected (rejected bugs archived in rejected/, excluded from the report)."
+fi
+
+# ── Populate the known-issues frontier feed ────────────────────────────────
+# Append this run's surviving bugs (deduped above, then verified) to the
+# per-area known-issues ledger so the NEXT run recognises them as already-filed
+# and hunts new ground instead of re-finding them. Confirmed/kept bugs ONLY —
+# the rejected/ and duplicates/ subdirs are excluded by the top-level glob, so a
+# false positive the verifier threw out never poisons the feed. Deduped against
+# what's already in the ledger (normalised title+path) and size-capped. Skipped
+# for ledger-neutral runs (--only, --viewport), exactly like the area.md writeback.
+if [[ "$DISCOVER" != "true" && "$GUIDE_MODE" != "only" && -z "$VIEWPORT" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+  KNOWN_FILE="$SITE_DIR/$AREA.known.md"
+  if [[ ! -f "$KNOWN_FILE" ]]; then
+    printf '# %s — bugs already found, verified and filed (harness-owned). QA runs read this to avoid re-reporting them; do not hand-edit.\n' "$AREA" > "$KNOWN_FILE"
+  fi
+  ADDED=0
+  for b in "$RUN_DIR"/bug-*.md; do
+    [[ -f "$b" ]] || continue
+    title="$(head -1 "$b" | sed 's/^#*[[:space:]]*//' | tr -d '|' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+    url="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+    sev="$(grep -iE '^Severity:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -cd 'A-Za-z')"
+    path="${url#https://${SITE_HOST}}"
+    [[ -n "$path" ]] || path="$url"
+    newkey="$(printf '%s' "$title" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')##$(norm_url "$url")"
+    dup=0
+    while IFS= read -r line; do
+      etitle="$(printf '%s' "$line" | sed 's/^- *//' | cut -d'|' -f1)"
+      eurl="$(printf '%s' "$line" | cut -d'|' -f2)"
+      ekey="$(printf '%s' "$etitle" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')##$(norm_url "$eurl")"
+      if [[ "$ekey" == "$newkey" ]]; then dup=1; break; fi
+    done < <(grep '^- ' "$KNOWN_FILE" 2>/dev/null)
+    if [[ $dup -eq 0 ]]; then
+      printf -- '- %s | %s | %s\n' "$title" "$path" "${sev:-?}" >> "$KNOWN_FILE"
+      ADDED=$((ADDED + 1))
+    fi
+  done
+  if [[ "$(grep -c '^- ' "$KNOWN_FILE" 2>/dev/null)" -gt 60 ]]; then
+    { grep -v '^- ' "$KNOWN_FILE" | head -1; grep '^- ' "$KNOWN_FILE" | tail -60; } > "$KNOWN_FILE.tmp" && mv "$KNOWN_FILE.tmp" "$KNOWN_FILE"
+  fi
+  if [[ $ADDED -gt 0 ]]; then
+    echo "▶ Frontier feed: recorded ${ADDED} new confirmed bug(s) to ${AREA}.known.md so future runs skip them and hunt new ground."
+  fi
 fi
 
 # De-poison the area notes before they are written back. Under context pressure

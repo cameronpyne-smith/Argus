@@ -181,6 +181,17 @@ never infer it:
   look at the one view you just changed. This is a general oracle: you don't need a
   visible error to call it a bug — two views of the same fact that disagree IS the
   bug.
+- **Round-trip fidelity.** After saving a value, reload or re-open the record and
+  compare what comes back against EXACTLY what you entered, character for
+  character. Deliberately save an AWKWARD value — a long string (200+ chars), a
+  high-precision number (12.345, a currency amount), unicode and special
+  characters (é, £, an emoji, an ampersand, a trailing space, a leading zero), an
+  edge date/time — then re-read it. Silent truncation (200 chars saved as 100),
+  rounding or precision loss, a dropped or double-encoded character, a date that
+  shifts by a timezone offset — these are silent data-corruption bugs with NO
+  error message and NO visible symptom until you diff. This is a general oracle:
+  what the field shows on reload must equal what you typed; if it comes back
+  changed, that IS the bug even though the save "succeeded".
 - **Interrupted / resumed flows.** Start a multi-step wizard, leave halfway
   (navigate away, browser Back, reload), then return. Is partial state saved
   sanely, or is it half-committed, duplicated, or silently lost?
