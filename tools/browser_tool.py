@@ -2692,6 +2692,25 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
 
+        # Seed the no-change baseline so the FIRST click on this page can be
+        # checked for no_visible_change. Navigate popped the baseline (above),
+        # and the auto-snapshot above uses "-c" — a different view mode from the
+        # "-i -c" the click fusion hashes against, so it can't seed a comparable
+        # baseline. Take one matching "-i -c" snapshot for the hash only;
+        # without it the first post-nav click (the exact case the signal exists
+        # for — landing on a page and clicking a dead control) never gets it.
+        try:
+            base_snap = _run_browser_command(
+                nav_session_key, "snapshot", ["-i", "-c"], timeout=15
+            )
+            if base_snap.get("success"):
+                _last_snapshot_hash[nav_session_key] = hashlib.md5(
+                    base_snap.get("data", {}).get("snapshot", "")
+                    .encode("utf-8", errors="replace")
+                ).hexdigest()
+        except Exception as e:
+            logger.debug("post-navigate baseline snapshot failed: %s", e)
+
         # Page load is the most common trigger for uncaught JS errors and
         # 5xx responses — surface them on the navigation itself, not
         # misattributed to (or lost before) the next action.
@@ -3391,6 +3410,22 @@ def browser_fill_form(fields, submit_ref: Optional[str] = None, task_id: Optiona
         else:
             try:
                 _run_browser_command(effective_task_id, "scrollintoview", [sref], timeout=15)
+            except Exception:
+                pass
+            # Reseed the no-change baseline to a snapshot taken AFTER the fills
+            # but BEFORE the submit click. Otherwise the post-submit snapshot is
+            # compared against the pre-fill baseline (set by the previous
+            # action); the filled values always change it, so a dead submit
+            # button could never be flagged as no_visible_change.
+            try:
+                pre_submit = _run_browser_command(
+                    effective_task_id, "snapshot", ["-i", "-c"], timeout=15
+                )
+                if pre_submit.get("success"):
+                    _last_snapshot_hash[effective_task_id] = hashlib.md5(
+                        pre_submit.get("data", {}).get("snapshot", "")
+                        .encode("utf-8", errors="replace")
+                    ).hexdigest()
             except Exception:
                 pass
             sres = _run_browser_command(effective_task_id, "click", [sref])
