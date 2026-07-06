@@ -133,6 +133,7 @@ from tools.terminal_tool import (
     _get_sudo_password_callback,
 )
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+from tools.budget_config import scale_for_context
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
@@ -11456,6 +11457,7 @@ class AIAgent:
                 tool_name=name,
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
+                config=scale_for_context(getattr(self.context_compressor, "context_length", None)),
             ) if not _is_multimodal_tool_result(function_result) else function_result
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
@@ -11493,7 +11495,11 @@ class AIAgent:
         num_tools = len(parsed_calls)
         if num_tools > 0:
             turn_tool_msgs = messages[-num_tools:]
-            enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+            enforce_turn_budget(
+                turn_tool_msgs,
+                env=get_active_env(effective_task_id),
+                config=scale_for_context(getattr(self.context_compressor, "context_length", None)),
+            )
 
         # ── /steer injection ──────────────────────────────────────────────
         # Append any pending user steer text to the last tool result so the
@@ -11878,6 +11884,7 @@ class AIAgent:
                 tool_name=function_name,
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
+                config=scale_for_context(getattr(self.context_compressor, "context_length", None)),
             ) if not _is_multimodal_tool_result(function_result) else function_result
 
             # Discover subdirectory context files from tool arguments
@@ -11934,7 +11941,11 @@ class AIAgent:
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools_seq = len(assistant_message.tool_calls)
         if num_tools_seq > 0:
-            enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+            enforce_turn_budget(
+                messages[-num_tools_seq:],
+                env=get_active_env(effective_task_id),
+                config=scale_for_context(getattr(self.context_compressor, "context_length", None)),
+            )
 
         # ── /steer injection ──────────────────────────────────────────────
         # See _execute_tool_calls_parallel for the rationale. Same hook,
@@ -15406,28 +15417,27 @@ class AIAgent:
                     messages = self._prune_superseded_snapshots(messages)
 
                     _compressor = self.context_compressor
+                    # Estimate covers system prompt + tool schemas (each can
+                    # be 5-30K tokens the messages-only sizing missed —
+                    # #14695) AND the tool results appended above, which
+                    # last_prompt_tokens cannot see yet. On a small
+                    # num_ctx-capped window one turn's results can exceed the
+                    # entire threshold->ceiling headroom, so deciding on the
+                    # previous turn's count alone lets the NEXT send overflow
+                    # and get silently front-truncated by the server.
+                    _estimate_tokens = estimate_request_tokens_rough(
+                        messages,
+                        system_prompt=active_system_prompt or "",
+                        tools=self.tools or None,
+                    )
                     if _compressor.last_prompt_tokens > 0:
-                        # Only use prompt_tokens — completion/reasoning
-                        # tokens don't consume context window space.
-                        # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
-                        # inflate completion_tokens with reasoning,
-                        # causing premature compression.  (#12026)
-                        _real_tokens = _compressor.last_prompt_tokens
+                        # Only use prompt_tokens (not completion/reasoning
+                        # tokens — thinking models inflate those, #12026) as
+                        # the accurate floor; the rough estimate adds the
+                        # not-yet-reported tail. Take the larger.
+                        _real_tokens = max(_compressor.last_prompt_tokens, _estimate_tokens)
                     else:
-                        # Include tool schemas — with 50+ tools enabled
-                        # these add 20-30K tokens the messages-only
-                        # estimate misses, which can skip compression
-                        # past the configured threshold (#14695).
-                        # Include the system prompt too, like the preflight
-                        # path: this fallback fires exactly when usage went
-                        # missing (stream died early), and omitting the
-                        # system prompt undercounts by its full size,
-                        # delaying compression toward the truncation cliff.
-                        _real_tokens = estimate_request_tokens_rough(
-                            messages,
-                            system_prompt=active_system_prompt or "",
-                            tools=self.tools or None,
-                        )
+                        _real_tokens = _estimate_tokens
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         self._safe_print("  ⟳ compacting context…")

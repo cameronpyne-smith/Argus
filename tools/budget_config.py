@@ -49,3 +49,28 @@ class BudgetConfig:
 
 # Default config -- matches current hardcoded behavior exactly.
 DEFAULT_BUDGET = BudgetConfig()
+
+
+def scale_for_context(context_length: int | None, base: BudgetConfig = DEFAULT_BUDGET) -> BudgetConfig:
+    """Scale the char budgets down when the model's context window is small.
+
+    The defaults above were calibrated for large-context cloud models. On a
+    num_ctx-capped local server (e.g. a 64K-token window) a single turn's
+    tool results could legally reach ~50K tokens — twice the compression
+    headroom — and the server then silently front-truncates the prompt.
+    Cap one turn's aggregate at ~25% of the window and a single result at
+    ~12.5%, never raising them above the calibrated defaults.
+    """
+    if not context_length or context_length <= 0:
+        return base
+    approx_chars = context_length * 4
+    turn = min(base.turn_budget, int(approx_chars * 0.25))
+    result = min(base.default_result_size, int(approx_chars * 0.125))
+    if turn == base.turn_budget and result == base.default_result_size:
+        return base
+    return BudgetConfig(
+        default_result_size=result,
+        turn_budget=turn,
+        preview_size=base.preview_size,
+        tool_overrides=base.tool_overrides,
+    )
