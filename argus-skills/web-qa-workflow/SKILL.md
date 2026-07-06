@@ -62,6 +62,17 @@ that action. A JS error thrown during normal use is very often the bug itself �
 record it. Each unique error is surfaced once per session, so if you want the full console log
 (including `console.error`/warnings) call `browser_console`.
 
+## Server errors surface automatically
+
+Action results include `new_server_errors` when the page triggered an HTTP 5xx (500/502/503…)
+during that action — collected passively from the network and deduped once per session. A 5xx
+during normal use is a real backend fault **even if the UI shows nothing or only a generic
+"Oops"/error page**: the user's action silently failed server-side, and that is a bug. Record it,
+citing the exact URL and status from `new_server_errors`. You do not need to hunt for these — they
+come to you, so keep NOT spelunking the console/network yourself. (4xx such as 401/403/404 are
+deliberately not surfaced — they are usually expected: session/auth refreshes, or the correct
+denials your authorization probes are supposed to produce.)
+
 ## Browser Console Rules
 
 - **Always wrap `browser_console` JavaScript in an IIFE**: `(() => { const btn = ...; return btn?.textContent })()`.

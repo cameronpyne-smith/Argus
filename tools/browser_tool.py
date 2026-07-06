@@ -1068,6 +1068,10 @@ _last_snapshot_hash: Dict[str, str] = {}
 # uncaught exceptions triggered by an action (a JS error thrown by a click is
 # very often the bug itself).
 _seen_console_errors: Dict[str, set] = {}
+# Per-session set of HTTP 5xx server errors already surfaced (keyed
+# "<status> <method> <url>"), so a recurring server fault is reported once, not
+# on every subsequent action. Populated by _attach_post_action_snapshot.
+_seen_server_errors: Dict[str, set] = {}
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -2382,6 +2386,48 @@ def _attach_post_action_snapshot(
                 )
     except Exception as e:
         logger.debug("post-action error surfacing failed: %s", e)
+
+    # Surface backend server errors (HTTP 5xx) the page triggered since the last
+    # action. Like new_js_errors, this is a passive, auto-surfaced, high-signal /
+    # low-noise oracle: a 5xx during normal use is a real backend fault even when
+    # the UI swallows it (blank, or a generic "Oops"). We poll the session's
+    # tracked network requests filtered to 5xx only — 4xx is noisy (auth
+    # refreshes, expected 401/403/404 on authz probes) and is deliberately
+    # excluded to stay FP-resistant. The model never has to hunt the network
+    # log; the signal comes to it, so the "don't spelunk console/network"
+    # guidance still holds. Deduped per session so a recurring fault reports once.
+    try:
+        net_res = _run_browser_command(
+            effective_task_id, "network", ["requests", "--status", "500-599"],
+            timeout=10,
+        )
+        if net_res.get("success"):
+            seen = _seen_server_errors.setdefault(effective_task_id, set())
+            fresh = []
+            for req in net_res.get("data", {}).get("requests", []):
+                status = req.get("status")
+                # Client-side guard: only genuine 5xx (belt-and-suspenders in
+                # case the --status filter ever returns extra rows).
+                if not isinstance(status, int) or not (500 <= status <= 599):
+                    continue
+                method = (req.get("method") or "").upper()
+                url = req.get("url") or ""
+                if not url:
+                    continue
+                key = f"{status} {method} {url}".strip()
+                if key not in seen:
+                    seen.add(key)
+                    fresh.append(key)
+            if fresh:
+                response["new_server_errors"] = fresh[:5]
+                response["server_error_hint"] = (
+                    "The page triggered HTTP 5xx server error(s) during this "
+                    "action — a real backend bug even if the UI showed nothing "
+                    "or only a generic error. Record it, citing the exact "
+                    "URL and status shown here."
+                )
+    except Exception as e:
+        logger.debug("post-action server-error surfacing failed: %s", e)
 
 
 # ============================================================================
