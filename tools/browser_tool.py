@@ -2329,8 +2329,12 @@ def _attach_post_action_snapshot(
         )
     except Exception as e:
         logger.debug("post-action snapshot failed: %s", e)
+        # The action that broke the page is exactly the one whose snapshot
+        # fails — still surface the JS/5xx errors it produced.
+        _attach_new_error_signals(effective_task_id, response)
         return
     if not snap.get("success"):
+        _attach_new_error_signals(effective_task_id, response)
         return
     data = snap.get("data", {})
     snapshot_text = data.get("snapshot", "")
@@ -2359,6 +2363,16 @@ def _attach_post_action_snapshot(
     if snap.get("fallback_warning") and not response.get("fallback_warning"):
         _copy_fallback_warning(response, snap)
 
+    _attach_new_error_signals(effective_task_id, response)
+
+
+def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
+    """Attach NEW uncaught-JS-error and HTTP-5xx signals to a tool result.
+
+    Shared by every observation point: post-action fused snapshots,
+    browser_navigate (page load is the most common trigger for both signals),
+    and browser_snapshot. Best-effort — never raises.
+    """
     # Surface uncaught JS errors triggered since the last action. Only NEW
     # messages (deduped per session) are attached, so a recurring error doesn't
     # spam every turn. This is the highest-signal, lowest-noise console
@@ -2648,6 +2662,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
 
+        # Page load is the most common trigger for uncaught JS errors and
+        # 5xx responses — surface them on the navigation itself, not
+        # misattributed to (or lost before) the next action.
+        _attach_new_error_signals(nav_session_key, response)
+
         return json.dumps(response, ensure_ascii=False)
     else:
         return json.dumps({
@@ -2725,6 +2744,8 @@ def browser_snapshot(
                     response.update(_sv_snap.to_dict())
         except Exception as _sv_exc:
             logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
+
+        _attach_new_error_signals(effective_task_id, response)
 
         return json.dumps(response, ensure_ascii=False)
     else:
