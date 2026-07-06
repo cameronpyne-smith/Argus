@@ -1062,6 +1062,11 @@ _LOCAL_SUFFIX = "::local"
 # post-nav click never compares against the previous page.
 _last_snapshot_hash: Dict[str, str] = {}
 
+# Session keys whose browser viewport has already been sized — the set call
+# costs a CLI spawn per navigation otherwise. Popped on session cleanup so a
+# reaper-recreated session gets sized again on its first nav.
+_viewport_applied: Dict[str, bool] = {}
+
 # Uncaught JS error messages already surfaced for a session key, so a recurring
 # error isn't re-reported on every action. An experienced QA watches the
 # console constantly; _attach_post_action_snapshot proactively surfaces NEW
@@ -1073,6 +1078,14 @@ _seen_console_errors: Dict[str, set] = {}
 # reported once, not on every subsequent action. Populated by
 # _attach_new_error_signals.
 _seen_server_errors: Dict[str, set] = {}
+
+# Per-session set of on-page error signatures already surfaced (normalised
+# snapshot lines). Companion oracle to the 5xx poll for apps that render
+# backend failures CLIENT-SIDE over HTTP 200 (error toasts, "Oops" screens,
+# role=alert messages) — on such apps the network oracle can never fire and
+# the rendered text is the only observable signal. Populated by
+# _attach_ui_error_signal.
+_seen_ui_errors: Dict[str, set] = {}
 
 # Warn-once flag for a failing server-error poll: if the installed
 # agent-browser lacks `network requests --status`, the 5xx oracle is dead for
@@ -2311,10 +2324,86 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
             break
         result.append(line)
         chars += len(line) + 1
+    if not result:
+        # Single-line/minified snapshot whose first line alone exceeds the
+        # budget — a raw slice beats returning only the truncation note.
+        result.append(snapshot_text[:max_chars - 80])
     remaining = len(lines) - len(result)
     if remaining > 0:
         result.append(f'\n[... {remaining} more lines truncated, use browser_snapshot for full content]')
     return '\n'.join(result)
+
+
+# On-page error signatures. Two tiers keep precision high: the phrase list
+# matches unmistakable failure copy anywhere on the page; the broader
+# error-word list applies ONLY to lines the accessibility tree marks as
+# alert/alertdialog (the role toasts and error banners render under).
+# "invalid"/validation wording is deliberately absent — QA runs provoke
+# validation errors on purpose, and correct validation must not ping the
+# oracle every time.
+_UI_ERROR_PHRASE_RE = re.compile(
+    r"(?i)(something went wrong|an unexpected error|error (?:has )?occurred|"
+    r"internal server error|\boops\b|"
+    r"failed to (?:load|save|fetch|submit|delete|update|create)|"
+    r"(?:request|operation|action|submission) failed|try again later|"
+    r"server error|contact (?:support|your administrator))"
+)
+_UI_ALERT_ROLE_RE = re.compile(r"(?i)^-?\s*(?:alert|alertdialog)\b")
+_UI_ALERT_ERROR_WORD_RE = re.compile(
+    r"(?i)\b(fail(?:ed|ure)?|error|unable|problem|wrong|cannot|could not|denied)\b"
+)
+_UI_ERROR_REF_RE = re.compile(r"\[ref=[^\]]*\]")
+_UI_ERROR_MAX_SURFACED = 3
+_UI_ERROR_LINE_MAX_CHARS = 200
+
+
+def _attach_ui_error_signal(
+    effective_task_id: str, response: dict, snapshot_text: str
+) -> None:
+    """Surface NEW client-rendered error text found in a fresh snapshot.
+
+    The passive network oracle only sees HTTP 5xx, but many apps (this one
+    proven: a real backend failure surfaced only as a toast over a 200)
+    report failures purely in the DOM. Scan the snapshot for error
+    signatures, dedupe per session so a persistent banner reports once, and
+    attach the evidence lines. Best-effort — never raises.
+    """
+    try:
+        if not snapshot_text:
+            return
+        seen = _seen_ui_errors.setdefault(effective_task_id, set())
+        fresh: list = []
+        fresh_norms: set = set()
+        for raw_line in snapshot_text.split("\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            is_alert_role = bool(_UI_ALERT_ROLE_RE.match(line))
+            if not (
+                _UI_ERROR_PHRASE_RE.search(line)
+                or (is_alert_role and _UI_ALERT_ERROR_WORD_RE.search(line))
+            ):
+                continue
+            norm = _UI_ERROR_REF_RE.sub("", line).lower()
+            norm = re.sub(r"\s+", " ", norm).strip()
+            if norm in seen or norm in fresh_norms:
+                continue
+            fresh_norms.add(norm)
+            fresh.append((norm, line[:_UI_ERROR_LINE_MAX_CHARS]))
+        if fresh:
+            surfaced = fresh[:_UI_ERROR_MAX_SURFACED]
+            seen.update(norm for norm, _ in surfaced)
+            response["new_ui_errors"] = [text for _, text in surfaced]
+            response["ui_error_hint"] = (
+                "The page rendered NEW error text after this action (apps "
+                "like this report backend failures as on-page messages over "
+                "HTTP 200, so no network signal fires). If you deliberately "
+                "provoked a validation error, this is expected behaviour — "
+                "otherwise treat it as a likely real failure: reproduce it "
+                "and record it citing the exact message shown here."
+            )
+    except Exception as e:
+        logger.debug("ui error surfacing failed: %s", e)
 
 
 def _attach_post_action_snapshot(
@@ -2365,14 +2454,18 @@ def _attach_post_action_snapshot(
     if detect_no_change and prev_hash is not None and new_hash == prev_hash:
         response["no_visible_change"] = True
         response["note"] = (
-            "The page snapshot is identical before and after this click — the "
-            "click produced no visible change. The element may be disabled, "
+            "The page snapshot is identical before and after this action — it "
+            "produced no visible change. The element may be disabled, "
             "purely decorative, or the ref stale. Do not repeat the same "
-            "click; take a fresh browser_snapshot and try a different element "
+            "action; take a fresh browser_snapshot and try a different element "
             "or approach. This is likely a tool/interaction issue, not a site "
             "bug — do not report it unless the control is clearly meant to act."
         )
     _last_snapshot_hash[effective_task_id] = new_hash
+
+    # Scan the FULL snapshot for client-rendered error signatures before
+    # truncation can drop them.
+    _attach_ui_error_signal(effective_task_id, response, snapshot_text)
 
     if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
         snapshot_text = _truncate_snapshot(snapshot_text)
@@ -2401,6 +2494,23 @@ def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
         err_res = _run_browser_command(
             effective_task_id, "errors", [], timeout=10
         )
+        if not err_res.get("success"):
+            # If the daemon itself is unreachable, the remaining polls
+            # (network, dialog) will fail the same way — don't burn their
+            # timeouts on top of a snapshot that already failed.
+            _err_text = str(err_res.get("error") or "").lower()
+            if any(
+                s in _err_text
+                for s in (
+                    "timed out", "timeout", "econnrefused",
+                    "connection refused", "not running", "no such session",
+                )
+            ):
+                logger.debug(
+                    "error-signal polls skipped — daemon unreachable: %s",
+                    _err_text,
+                )
+                return
         if err_res.get("success"):
             seen = _seen_console_errors.setdefault(effective_task_id, set())
             fresh = []
@@ -2505,6 +2615,34 @@ def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
                     )
     except Exception as e:
         logger.debug("post-action dialog surfacing failed: %s", e)
+
+    # Supervisor-backed sessions: bridge-captured dialogs never fire the CLI
+    # dialog status above (the native dialog never opens), and until now they
+    # only surfaced via browser_snapshot's merge — so a click that opened a
+    # confirm() looked like no_visible_change in its own fused result. Merge
+    # the supervisor's pending dialogs into every observation point.
+    try:
+        if "pending_dialog" not in response and "pending_dialogs" not in response:
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+            _sv = SUPERVISOR_REGISTRY.get(effective_task_id)
+            if _sv is not None:
+                _sv_snap = _sv.snapshot()
+                if _sv_snap.active and _sv_snap.pending_dialogs:
+                    response["pending_dialogs"] = [
+                        d.to_dict() for d in _sv_snap.pending_dialogs
+                    ]
+                    response["pending_dialog_hint"] = (
+                        "A JS dialog (alert/confirm/prompt) is open and "
+                        "blocking the page. Respond with browser_dialog("
+                        "action='accept') or ('dismiss') — a confirm/prompt "
+                        "left open makes every following action appear to do "
+                        "nothing. This dialog is the app asking for a "
+                        "decision, not a bug."
+                    )
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug("supervisor dialog surfacing failed: %s", e)
 
 
 # ============================================================================
@@ -2613,13 +2751,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # the element (elementFromPoint at its centre returns null), which was long
     # misdiagnosed as "Svelte filters synthetic clicks" and worked around with
     # dispatchEvent. A taller viewport keeps such controls on-screen so native
-    # browser_click/browser_type work directly. Best-effort, idempotent, and
-    # re-applied each nav so a reaper-recreated session is covered too.
-    if result.get("success"):
+    # browser_click/browser_type work directly. Best-effort. Applied once per
+    # session key (a CLI spawn per nav is pure overhead otherwise); the
+    # session-cleanup path pops the flag, so a reaper-recreated session gets
+    # it re-applied on its first nav.
+    if result.get("success") and not _viewport_applied.get(nav_session_key):
         _vp_w = os.environ.get("ARGUS_BROWSER_VIEWPORT_W", "1280")
         _vp_h = os.environ.get("ARGUS_BROWSER_VIEWPORT_H", "1080")
         try:
             _run_browser_command(nav_session_key, "set", ["viewport", _vp_w, _vp_h], timeout=15)
+            _viewport_applied[nav_session_key] = True
         except Exception:
             pass
 
@@ -2716,6 +2857,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
+                _attach_ui_error_signal(nav_session_key, response, snapshot_text)
                 if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
                     snapshot_text = _truncate_snapshot(snapshot_text)
                 response["snapshot"] = snapshot_text
@@ -2801,6 +2943,7 @@ def browser_snapshot(
                 snapshot_text.encode("utf-8", errors="replace")
             ).hexdigest()
 
+        _pre_truncation_text = snapshot_text
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
             snapshot_text = _extract_relevant_content(snapshot_text, user_task)
@@ -2812,6 +2955,7 @@ def browser_snapshot(
             "snapshot": snapshot_text,
             "element_count": len(refs) if refs else 0
         }
+        _attach_ui_error_signal(effective_task_id, response, _pre_truncation_text)
         _copy_fallback_warning(response, result)
 
         # Merge supervisor state (pending dialogs + frame tree) when a CDP
@@ -3082,7 +3226,14 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
             "pressed": key
         }
         _copy_fallback_warning(response, result)
-        _attach_post_action_snapshot(effective_task_id, response)
+        # An Enter press is a submit — a dead one is the same failure class
+        # the click/form-submit no-change detection covers. Other keys
+        # (Escape, Tab, arrows) legitimately leave the snapshot identical
+        # and stay excluded.
+        _attach_post_action_snapshot(
+            effective_task_id, response,
+            detect_no_change=(key.strip().lower() == "enter"),
+        )
         return json.dumps(response, ensure_ascii=False)
     else:
         response = {
@@ -4249,7 +4400,9 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         # process. Also bounds memory in a long-lived gateway.
         _seen_console_errors.pop(task_id, None)
         _seen_server_errors.pop(task_id, None)
+        _seen_ui_errors.pop(task_id, None)
         _last_snapshot_hash.pop(task_id, None)
+        _viewport_applied.pop(task_id, None)
 
 
 

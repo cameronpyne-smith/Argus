@@ -73,6 +73,16 @@ come to you, so keep NOT spelunking the console/network yourself. (4xx such as 4
 deliberately not surfaced — they are usually expected: session/auth refreshes, or the correct
 denials your authorization probes are supposed to produce.)
 
+## On-page error text surfaces automatically
+
+Many apps report backend failures only in the DOM — an error toast or "Something went wrong"
+message rendered over an HTTP 200 — so no network signal ever fires. Action results include
+`new_ui_errors` when NEW error text (failure phrases, or an `alert`-role message with error
+wording) appears in the post-action snapshot, deduped once per session. Interpret it in context:
+if you deliberately provoked a validation error, it is expected behaviour and not a bug; if it
+appeared during a normal operation (save, delete, subscribe, load), treat it as a likely real
+failure — reproduce it and record it citing the exact message.
+
 ## Native dialogs (alert / confirm / prompt)
 
 When a page opens a native JS dialog — `confirm("Delete this item?")`, `prompt(...)`, an
