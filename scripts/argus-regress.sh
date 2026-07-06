@@ -37,6 +37,20 @@ SITE_HOST="dev.xml.remundo.com"
 REPO="remundo-xml/Remundo.Ui.Platform"
 RUN_DIR="/opt/data/run"
 WORK="/tmp/argus-regress"
+# Confine agent write_file/patch to the run dir (enforced in file_tools) —
+# regress sessions only ever write verdict.md there.
+export ARGUS_WRITE_ROOTS="/opt/data/run"
+
+# Mutual exclusion with argus-test / argus-file-issues (shared /opt/data/run,
+# --continue session, gh auth). See argus-test.sh for rationale.
+if [[ "${ARGUS_LOCK_HELD:-}" != "1" ]]; then
+  exec 9>/opt/data/.argus.lock
+  if ! flock -n 9; then
+    echo "✗ Another Argus run (test/regress/filer) is already active — refusing to run concurrently." >&2
+    exit 75
+  fi
+  export ARGUS_LOCK_HELD=1
+fi
 
 ISSUE_NUMS=()
 LIMIT=""
@@ -178,8 +192,20 @@ for it in issues:
         f.write(f"viewport_w={vw}\nviewport_h={vh}\npersona={persona}\n")
         f.write(f"state={it.get('state','')}\ntitle={title}\n")
     print(num)
+open(os.path.join(work, "parse-ok"), "w").write("ok\n")
 PYEOF
 )
+
+# set -e cannot see a failure inside the <( ) process substitution: a crash
+# in the parser (malformed issues.json from a partial gh response) used to
+# yield an empty SWEEP_NUMS and a green "nothing to do" exit — a silently
+# skipped sweep. The sentinel file distinguishes "parsed fine, zero issues"
+# from "parser died".
+if [[ ! -f "$WORK/parse-ok" ]]; then
+  echo "✗ Issue parsing failed (see above) — aborting the sweep rather than reporting an empty board." >&2
+  exit 1
+fi
+rm -f "$WORK/parse-ok"
 
 if [[ ${#SWEEP_NUMS[@]} -eq 0 ]]; then
   echo "▶ No open Argus issues to sweep — nothing to do."

@@ -14,6 +14,18 @@
 
 set -euo pipefail
 
+# Mutual exclusion with argus-test / argus-regress (shared --continue session
+# and gh auth in the same HOME). ARGUS_LOCK_HELD is exported by argus-test so
+# the end-of-run filer invocation it makes does not deadlock on its own lock.
+if [[ "${ARGUS_LOCK_HELD:-}" != "1" ]]; then
+  exec 9>/opt/data/.argus.lock
+  if ! flock -n 9; then
+    echo "✗ Another Argus run (test/regress/filer) is already active — refusing to run concurrently." >&2
+    exit 75
+  fi
+  export ARGUS_LOCK_HELD=1
+fi
+
 REPO="remundo-xml/Remundo.Ui.Platform"
 REPORT_FILE=""
 # Model + provider default to the local gemma variant and are independently
@@ -165,6 +177,9 @@ done
 # carry out a sequence of side-effecting commands.
 DECIDE_DIR=/tmp/argus-decide
 rm -rf "$DECIDE_DIR"; mkdir -p "$DECIDE_DIR"
+# Confine the decide agent's write_file to its decision dir (enforced in
+# file_tools) — it only ever writes file-NN.md / _summary.md there.
+export ARGUS_WRITE_ROOTS="$DECIDE_DIR"
 # Script runs the read-only dedup query (reliable) and hands it to the agent.
 HOME="$SUBPROC_HOME" gh issue list -R "$REPO" --label Argus --state all --limit 200 \
   --json number,title,state,stateReason > "$DECIDE_DIR/existing-issues.json" 2>/dev/null \
@@ -209,11 +224,20 @@ FILING_START_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # IDENTICAL to an existing issue. Never create an issue whose title (case/space
 # -normalised) already exists. Semantic near-dupes still rely on the agent.
 norm() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
+# The net covers OPEN issues and CLOSED-as-NOT_PLANNED only. CLOSED-COMPLETED
+# is deliberately excluded: the agent is instructed to FILE a regression of a
+# completed fix, and its natural title is the same factual title as the
+# original — including completed issues here silently blocked every
+# regression refile.
 EXISTING_TITLES="$(python3 -c "
 import json
 try: data=json.load(open('$DECIDE_DIR/existing-issues.json'))
 except Exception: data=[]
-for i in data: print(i.get('title',''))
+for i in data:
+    state = (i.get('state') or '').upper()
+    reason = (i.get('stateReason') or '').upper()
+    if state == 'OPEN' or (state == 'CLOSED' and reason == 'NOT_PLANNED'):
+        print(i.get('title',''))
 " 2>/dev/null)"
 declare -A EXISTING_NORM=()
 while IFS= read -r t; do [[ -n "$t" ]] && EXISTING_NORM["$(norm "$t")"]=1; done <<< "$EXISTING_TITLES"
@@ -248,6 +272,7 @@ for df in "$DECIDE_DIR"/file-*.md; do
              --title "$title" --body-file "$body_file" 2>&1); then
     echo "  + filed: $title → $url"
     filed=$((filed + 1)); CREATED_NUMS+=("${url##*/}")
+    EXISTING_NORM["$(norm "$title")"]=1
   else
     # retry once for the intermittent PAT 401
     sleep 2
@@ -255,6 +280,7 @@ for df in "$DECIDE_DIR"/file-*.md; do
                --title "$title" --body-file "$body_file" 2>&1); then
       echo "  + filed (retry): $title → $url"
       filed=$((filed + 1)); CREATED_NUMS+=("${url##*/}")
+      EXISTING_NORM["$(norm "$title")"]=1
     else
       echo "  ⚠ failed to file '$title': $url"
     fi

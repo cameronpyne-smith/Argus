@@ -67,6 +67,25 @@ SITE_HOST="dev.xml.remundo.com"
 SITE_DIR="/opt/data/qa-notes/${SITE}"
 INDEX="$SITE_DIR/index.md"
 RUN_DIR="/opt/data/run"
+# Confine the agent's write_file/patch tools to the run's working dirs
+# (enforced in file_tools). The anti-poisoning rule "agents only write under
+# /opt/data/run" was prompt-only before — an agent could overwrite its own
+# skill, the pin sidecar, config.yaml, or the qa-notes ledger.
+export ARGUS_WRITE_ROOTS="/opt/data/run:/opt/data/reports"
+
+# Mutual exclusion across argus-test / argus-regress / argus-file-issues:
+# they share /opt/data/run, the global --continue session, and the gh auth in
+# the same HOME — an overlapping regress sweep once could rm -rf a live QA
+# run's bug files. ARGUS_LOCK_HELD lets the filer run when argus-test (which
+# already holds the lock) invokes it at the end of a run.
+if [[ "${ARGUS_LOCK_HELD:-}" != "1" ]]; then
+  exec 9>/opt/data/.argus.lock
+  if ! flock -n 9; then
+    echo "✗ Another Argus run (test/regress/filer) is already active — refusing to run concurrently." >&2
+    exit 75
+  fi
+  export ARGUS_LOCK_HELD=1
+fi
 
 FOCUS=""
 # Per-run guidance (--prompt / --only). GUIDE_TEXT is the user instruction;
@@ -111,8 +130,21 @@ DISCOVER=false
 RECORD=false
 # Issue filing default comes from ARGUS_FILE_ISSUES in /opt/data/.env;
 # --issues / --no-issues override per run. Report is always written.
-FILE_ISSUES="$(grep -E '^ARGUS_FILE_ISSUES=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
-FILE_ISSUES="${FILE_ISSUES:-false}"
+# normalize_bool: .env booleans arrive in whatever case/spelling the operator
+# typed (True, YES, 1). Comparing "== true" case-sensitively made
+# ARGUS_VERIFY=True silently DISABLE verification — the dangerous direction.
+normalize_bool() {  # $1 raw value, $2 default
+  local v
+  v="$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  case "$v" in
+    true|1|yes|on) echo "true" ;;
+    false|0|no|off) echo "false" ;;
+    "") echo "$2" ;;
+    *) echo "$2" ;;
+  esac
+}
+FILE_ISSUES="$(grep -E '^ARGUS_FILE_ISSUES=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+FILE_ISSUES="$(normalize_bool "$FILE_ISSUES" "false")"
 
 # Independent verification pass (default ON for QA runs). The exploration
 # session files a bug the moment it sees odd behaviour, and a small model
@@ -123,8 +155,8 @@ FILE_ISSUES="${FILE_ISSUES:-false}"
 # not catch these. After exploration, a FRESH skeptical session re-reproduces
 # each recorded bug from scratch (default verdict = reject) and returns keep /
 # downgrade / reject. Disable with --no-verify or ARGUS_VERIFY=false.
-VERIFY="$(grep -E '^ARGUS_VERIFY=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
-VERIFY="${VERIFY:-true}"
+VERIFY="$(grep -E '^ARGUS_VERIFY=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+VERIFY="$(normalize_bool "$VERIFY" "true")"
 # The verify pass can run on a different (stronger) model than exploration —
 # candidates are few, so a better judge here is cheap. Defaults to the run's
 # model/provider; override with --verify-model / --verify-provider.
@@ -598,7 +630,7 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 8 ]]; do
   AGENT_RC=0
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
-    argus chat --continue --max-turns 150 \
+    argus chat --continue --max-turns "$MAX_TURNS" \
     -t browser,skills_ro,file,terminal \
     -q "$NUDGE_PROMPT" \
     $PROVIDER_FLAGS || AGENT_RC=$?
@@ -805,13 +837,16 @@ Write that file, then stop. Do not record new bugs and do not test anything beyo
 
     v="$(grep -iE '^VERDICT:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z')"
     reason="$(grep -iE '^REASON:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+    # Anchored patterns: a mixed line like "confirmed — do not downgrade"
+    # squashes to "confirmeddonotdowngrade"; substring matching classified it
+    # by whichever keyword the case listed first, not the actual verdict.
     case "$v" in
-      *reject*)
+      reject*)
         echo "    ✗ REJECTED — ${reason:-no reason given}"
         printf '\nVerification: REJECTED on independent re-test — %s\n' "${reason:-no reason given}" >> "$b"
         mv "$b" "$RUN_DIR/rejected/$(basename "$b")" 2>/dev/null || true
         ;;
-      *downgrade*)
+      downgrade*)
         newsev="$(grep -iE '^SEVERITY:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -cd 'A-Za-z')"
         if [[ -n "$newsev" ]]; then
           oldsev="$(grep -iE '^Severity:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
@@ -823,7 +858,7 @@ Write that file, then stop. Do not record new bugs and do not test anything beyo
           printf '\nVerification: reviewed on re-test (downgrade requested without a level) — %s\n' "${reason:-no reason given}" >> "$b"
         fi
         ;;
-      *confirm*)
+      confirm*)
         echo "    ✓ CONFIRMED — ${reason:-reproduced}"
         printf '\nVerification: confirmed on independent re-test — %s\n' "${reason:-reproduced}" >> "$b"
         ;;

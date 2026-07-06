@@ -171,6 +171,30 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
+    # Opt-in write allowlist for autonomous runs (colon-separated roots).
+    # An unattended QA agent with unconfined write_file/patch can overwrite
+    # its own skill, the pin sidecar, config.yaml, or the persistent coverage
+    # ledger — the same run-poisoning class as skill deletion, on a different
+    # verb. The run harness sets ARGUS_WRITE_ROOTS to the run's working
+    # directories; unset means no restriction (normal interactive use).
+    write_roots = os.environ.get("ARGUS_WRITE_ROOTS", "").strip()
+    if write_roots:
+        allowed = [
+            r.rstrip("/") for r in write_roots.split(":") if r.strip()
+        ]
+        candidates = {resolved, normalized}
+        permitted = any(
+            c == root or c.startswith(root + "/")
+            for root in allowed
+            for c in candidates
+        )
+        if not permitted:
+            return (
+                f"Refusing to write outside this run's working directories: {filepath}\n"
+                f"This autonomous run may only write under: {write_roots}. "
+                f"Files the run needs live under those roots; nothing else "
+                f"should be modified."
+            )
     return None
 
 
