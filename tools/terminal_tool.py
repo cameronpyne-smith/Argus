@@ -517,6 +517,30 @@ def _safe_command_preview(command: Any, limit: int = 200) -> str:
     except Exception:
         return f"<{type(command).__name__}>"
 
+_PRE_START_ERROR_MARKERS = (
+    "connection refused",
+    "econnrefused",
+    "could not connect",
+    "cannot connect",
+    "failed to connect",
+    "no such container",
+    "is the docker daemon running",
+    "name or service not known",
+    "temporary failure in name resolution",
+)
+
+
+def _failed_before_command_started(e: Exception) -> bool:
+    """True only when the failure clearly happened before the command could
+    start (the exec channel never opened), so re-running cannot duplicate
+    side effects. Errors after startup — stream drops, backend hiccups —
+    return False: the command may already have executed."""
+    if isinstance(e, ConnectionRefusedError):
+        return True
+    msg = str(e).lower()
+    return any(marker in msg for marker in _PRE_START_ERROR_MARKERS)
+
+
 def _looks_like_env_assignment(token: str) -> bool:
     """Return True when *token* is a leading shell environment assignment."""
     if "=" not in token or token.startswith("="):
@@ -2047,21 +2071,31 @@ def terminal_tool(
                             "error": f"Command timed out after {effective_timeout} seconds"
                         }, ensure_ascii=False)
                     
-                    # Retry on transient errors
-                    if retry_count < max_retries:
+                    # Retry ONLY failures that happened before the command
+                    # could start (the exec channel never opened). Anything
+                    # else — stream drops, backend errors mid-command — must
+                    # surface instead: the command may already have run, and a
+                    # blind re-run duplicates non-idempotent side effects
+                    # (e.g. an `echo >> file` append landing several times).
+                    if retry_count < max_retries and _failed_before_command_started(e):
                         retry_count += 1
                         wait_time = 2 ** retry_count
                         logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
                                        wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                         time.sleep(wait_time)
                         continue
-                    
+
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                 max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+                                 retry_count, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
+                        "error": (
+                            f"Command execution failed: {type(e).__name__}: {str(e)}. "
+                            "The command may or may not have run — if it has side "
+                            "effects (writes, appends, submissions), verify its "
+                            "effect before re-running."
+                        )
                     }, ensure_ascii=False)
                 
                 # Got a result
