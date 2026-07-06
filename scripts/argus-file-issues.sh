@@ -145,12 +145,16 @@ fi
 
 # Labels: 'Argus' is always applied (dedupe depends on it). Extra labels are
 # per-deployment config, e.g. ARGUS_EXTRA_LABELS=salmons or =triage,frontend.
+# Built as an ARRAY: the previous string version embedded literal \" quote
+# characters into the label argument (no eval happens on expansion), so with
+# any extra label configured, gh rejected the nonexistent label \"x\" and
+# EVERY issue create failed — nothing got filed.
 EXTRA_LABELS="$(grep -E '^ARGUS_EXTRA_LABELS=' /opt/data/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
-LABEL_FLAGS="--label Argus"
+LABEL_ARGS=(--label Argus)
 IFS=',' read -ra _extra <<< "$EXTRA_LABELS"
 for _l in "${_extra[@]}"; do
   _l="$(echo "$_l" | xargs)"
-  if [[ -n "$_l" ]]; then LABEL_FLAGS="$LABEL_FLAGS --label \"$_l\""; fi
+  if [[ -n "$_l" ]]; then LABEL_ARGS+=(--label "$_l"); fi
 done
 
 # ── Decide / execute split ────────────────────────────────────────────────
@@ -238,18 +242,16 @@ for df in "$DECIDE_DIR"/file-*.md; do
     echo "  = skip (title already exists): $title"
     continue
   fi
-  sec_label=""
-  case "$security" in [Yy]es|true|TRUE) sec_label='--label Security' ;; esac
-  # shellcheck disable=SC2086
-  if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" $LABEL_FLAGS $sec_label \
+  sec_args=()
+  case "$security" in [Yy]es|true|TRUE) sec_args=(--label Security) ;; esac
+  if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" "${LABEL_ARGS[@]}" "${sec_args[@]}" \
              --title "$title" --body-file "$body_file" 2>&1); then
     echo "  + filed: $title → $url"
     filed=$((filed + 1)); CREATED_NUMS+=("${url##*/}")
   else
     # retry once for the intermittent PAT 401
     sleep 2
-    # shellcheck disable=SC2086
-    if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" $LABEL_FLAGS $sec_label \
+    if url=$(HOME="$SUBPROC_HOME" gh issue create -R "$REPO" "${LABEL_ARGS[@]}" "${sec_args[@]}" \
                --title "$title" --body-file "$body_file" 2>&1); then
       echo "  + filed (retry): $title → $url"
       filed=$((filed + 1)); CREATED_NUMS+=("${url##*/}")
