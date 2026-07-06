@@ -260,6 +260,16 @@ class SupervisorSnapshot:
         }
         if self.recent_dialogs:
             out["recent_dialogs"] = [d.to_dict() for d in self.recent_dialogs]
+        errs = [e for e in self.console_errors if e.level in ("error", "exception")]
+        if errs:
+            out["console_errors"] = [
+                {
+                    "level": e.level,
+                    "text": e.text[:300],
+                    **({"url": e.url} if e.url else {}),
+                }
+                for e in errs[-5:]
+            ]
         return out
 
 
@@ -1307,9 +1317,17 @@ class CDPSupervisor:
     def _on_console(self, params: Dict[str, Any], *, level_from: str) -> None:
         if level_from == "exception":
             details = params.get("exceptionDetails") or {}
+            # exceptionDetails.text alone is typically just "Uncaught" — the
+            # actual message + stack head live in exception.description.
             text = str(details.get("text") or "")
+            exc = details.get("exception") or {}
+            desc = str(exc.get("description") or exc.get("value") or "")
+            if desc and desc not in text:
+                text = f"{text}: {desc}" if text else desc
             url = details.get("url")
-            event = ConsoleEvent(ts=time.time(), level="exception", text=text, url=url)
+            event = ConsoleEvent(
+                ts=time.time(), level="exception", text=text[:1000], url=url
+            )
         else:
             raw_level = str(params.get("type") or "log")
             level = "error" if raw_level in {"error", "assert"} else (
