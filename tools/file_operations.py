@@ -962,14 +962,31 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
+        # Post-write verification — re-read the file and confirm the bytes we
+        # intended to write actually landed. The stdin pipe path can fail
+        # silently (writer thread swallows BrokenPipeError, so ``cat`` sees an
+        # early EOF and still exits 0, leaving a truncated file behind a
+        # success result). patch_replace has carried this exact check since a
+        # silent-persistence incident; write_file needs it just as much —
+        # a truncated write here is a lost record with no error signal.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return WriteResult(error=f"Post-write verification failed: could not re-read {path}")
+        # Normalize line endings before comparing (Windows text-mode writes
+        # translate \n → \r\n on disk; see the same block in patch_replace).
+        _verify_stdout_normalized = verify_result.stdout.replace("\r\n", "\n").replace("\r", "\n")
+        _content_normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+        if _verify_stdout_normalized != _content_normalized:
+            return WriteResult(error=(
+                f"Post-write verification failed for {path}: on-disk content "
+                f"differs from intended write "
+                f"(wrote {len(_content_normalized)} chars, read back "
+                f"{len(_verify_stdout_normalized)} chars after normalizing line endings). "
+                "The write did not persist. Retry the write."
+            ))
 
-        try:
-            bytes_written = int(stat_result.stdout.strip())
-        except ValueError:
-            bytes_written = len(content.encode('utf-8'))
+        bytes_written = len(content.encode('utf-8'))
 
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
