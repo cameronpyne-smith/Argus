@@ -15418,8 +15418,15 @@ class AIAgent:
                         # these add 20-30K tokens the messages-only
                         # estimate misses, which can skip compression
                         # past the configured threshold (#14695).
+                        # Include the system prompt too, like the preflight
+                        # path: this fallback fires exactly when usage went
+                        # missing (stream died early), and omitting the
+                        # system prompt undercounts by its full size,
+                        # delaying compression toward the truncation cliff.
                         _real_tokens = estimate_request_tokens_rough(
-                            messages, tools=self.tools or None
+                            messages,
+                            system_prompt=active_system_prompt or "",
+                            tools=self.tools or None,
                         )
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
