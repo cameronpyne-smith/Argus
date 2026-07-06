@@ -19,6 +19,7 @@ Improvements over v2:
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -489,6 +490,21 @@ class ContextCompressor(ContextEngine):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+        # Truncation signature: Ollama-style servers do not error on context
+        # overflow — they silently drop the prompt HEAD (system prompt, goal,
+        # credentials) and return 200, so reported prompt usage pinned at the
+        # window is the only observable symptom. Surface it loudly; the
+        # normal threshold check will compress on this count.
+        if (
+            self.context_length
+            and self.last_prompt_tokens >= int(self.context_length * 0.98)
+        ):
+            logger.warning(
+                "Reported prompt_tokens (%s) is at >=98%% of context_length (%s) — "
+                "the server has likely truncated the prompt head silently; "
+                "compression will run on this turn's count.",
+                self.last_prompt_tokens, self.context_length,
+            )
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -843,6 +859,22 @@ class ContextCompressor(ContextEngine):
             "do not preserve their values."
         )
 
+        # QA-run state slots. The generic template is dev-work-shaped
+        # (files/branch/tests); an Argus QA run's irreplaceable in-context
+        # state is which bugs are already recorded and what ground is already
+        # covered — losing those to compaction causes duplicate bug records
+        # and re-tested areas. Env-gated so ordinary Hermes sessions keep the
+        # unmodified template.
+        _qa_sections = ""
+        if os.environ.get("ARGUS_LOCAL_MODEL") or os.environ.get("ARGUS_NUM_CTX"):
+            _qa_sections = """## Bugs Recorded This Run
+[QA runs: every bug already CONFIRMED and written to /opt/data/run/bug-*.md — one line each: filename — title — URL. These are DONE: never re-test, re-record, or re-file them.]
+
+## Coverage So Far
+[QA runs: which areas / checklist items were already tested this run and their outcome, and what remains untested — testing must resume on NEW ground, never repeat covered checks.]
+
+"""
+
         # Shared structured template (used by both paths).
         _template_sections = f"""## Active Task
 [THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
@@ -881,7 +913,7 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Blocked
 [Any blockers, errors, or issues not yet resolved. Include exact error messages.]
 
-## Key Decisions
+{_qa_sections}## Key Decisions
 [Important technical decisions and WHY they were made]
 
 ## Resolved Questions
@@ -1417,10 +1449,27 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
+        # Near the real window the incompressible floor (system prompt + tool
+        # schemas + summary + protected tail) can sit ABOVE the threshold, so
+        # a full-budget pass saves almost nothing and compression re-fires
+        # every turn — each pass an LLM summarization that rewrites (and
+        # erodes) the previous summary. Halve the protected tail for this
+        # pass instead: recent raw turns are the one component that can
+        # actually shrink.
+        tail_budget = self.tail_token_budget
+        if self.context_length and display_tokens >= int(self.context_length * 0.85):
+            tail_budget = max(1024, self.tail_token_budget // 2)
+            if not self.quiet_mode:
+                logger.info(
+                    "Near context ceiling (%s/%s tokens) — protecting a halved "
+                    "tail (%s tokens) for this compression pass",
+                    display_tokens, self.context_length, tail_budget,
+                )
+
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n,
-            protect_tail_tokens=self.tail_token_budget,
+            protect_tail_tokens=tail_budget,
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
@@ -1430,7 +1479,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_end = self._find_tail_cut_by_tokens(
+            messages, compress_start, token_budget=tail_budget,
+        )
 
         if compress_start >= compress_end:
             return messages
