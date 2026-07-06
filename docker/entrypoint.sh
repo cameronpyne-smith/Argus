@@ -294,6 +294,41 @@ def _patch_vision(c):
     return re.sub(r'^  vision:\n(?:    .*\n)+', repl, c, flags=re.MULTILINE)
 content = _patch_vision(content)
 
+# Every patch above is a bare re.sub: if a Hermes upgrade renames a key or
+# reflows the config, the sub silently no-ops and Hermes falls back to the
+# upstream default — for context_length that default is ~262144, which
+# re-creates the silent-truncation catastrophe this whole block exists to
+# prevent, with zero warning. Verify every expected value actually landed and
+# refuse to start the container otherwise (the unwritten config keeps its
+# previous, coherent values).
+import sys
+
+_vision_m = re.search(r'^  vision:\n(?:    .*\n)+', content, flags=re.MULTILINE)
+_vision_block = _vision_m.group(0) if _vision_m else ""
+checks = [
+    ("agent.reasoning_effort = none", re.search(r'^\s+reasoning_effort:\s*none\s*$', content, flags=re.MULTILINE)),
+    ("agent.tool_use_enforcement = true", re.search(r'^\s+tool_use_enforcement:\s*true\s*$', content, flags=re.MULTILINE)),
+    (f"model.ollama_num_ctx = {NUM_CTX}", re.search(rf'^\s+ollama_num_ctx:\s*{NUM_CTX}\s*$', content, flags=re.MULTILINE)),
+    (f"model.context_length = {NUM_CTX}", re.search(rf'^\s+context_length:\s*{NUM_CTX}\s*$', content, flags=re.MULTILINE)),
+    ("compression.threshold = 0.60", re.search(r'^compression:\n(?:[ \t]+.*\n)*?[ \t]+threshold:[ \t]*0\.60\s*$', content, flags=re.MULTILINE)),
+    ("compression.protect_last_n = 6", re.search(r'^compression:\n(?:[ \t]+.*\n)*?[ \t]+protect_last_n:[ \t]*6\s*$', content, flags=re.MULTILINE)),
+    ("agent.nudge_interval = 0", re.search(r'^\s+nudge_interval:\s*0\s*$', content, flags=re.MULTILINE)),
+    ('terminal.env_passthrough = ["GH_TOKEN"]', re.search(r'^\s+env_passthrough:\s*\["GH_TOKEN"\]\s*$', content, flags=re.MULTILINE)),
+    (f"vision.model = {_VISION_MODEL}", re.search(rf'^    model:\s*{re.escape(_VISION_MODEL)}\s*$', _vision_block, flags=re.MULTILINE)),
+    (f"vision.base_url = {_VISION_BASE_URL}", re.search(rf'^    base_url:\s*{re.escape(_VISION_BASE_URL)}\s*$', _vision_block, flags=re.MULTILINE)),
+]
+missing = [label for label, found in checks if not found]
+if missing:
+    sys.stderr.write(
+        "✗ Argus config patch FAILED — the upstream config.yaml format has "
+        "drifted and these expected values did not land:\n"
+        + "".join(f"    - {m}\n" for m in missing)
+        + "  Refusing to start: a missed context/compression patch silently "
+        "truncates every request past num_ctx. Fix the patterns in "
+        "docker/entrypoint.sh (or the config format) and restart.\n"
+    )
+    sys.exit(1)
+
 with open(config_path, "w") as f:
     f.write(content)
 PYEOF
