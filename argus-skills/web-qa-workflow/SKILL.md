@@ -286,4 +286,8 @@ When you find a bug, record:
 - **Severity**: Critical (blocks core flow) / High (major feature broken) / Medium (partial, workaround exists) / Low (cosmetic)
 - **Console errors** if any
 
-At the end of the test session, write all findings in a single report.
+Record each bug to its OWN file the instant you confirm it — never wait until the
+end of the session, and never batch findings into one report written later. The
+moment you are sure something is a bug, writing its file is your very next action,
+before you continue testing. A bug you defer to "write up at the end" is a bug you
+lose — this is the single most common way real findings never make it into the report.
