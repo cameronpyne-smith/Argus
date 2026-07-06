@@ -73,6 +73,17 @@ come to you, so keep NOT spelunking the console/network yourself. (4xx such as 4
 deliberately not surfaced — they are usually expected: session/auth refreshes, or the correct
 denials your authorization probes are supposed to produce.)
 
+## Native dialogs (alert / confirm / prompt)
+
+When a page opens a native JS dialog — `confirm("Delete this item?")`, `prompt(...)`, an
+`alert` — it **blocks the page** until answered. Action results include `pending_dialog` (with
+`pending_dialog_hint`) when one is open. Respond with `browser_dialog(action='accept')` to click
+OK / proceed (pass `prompt_text` for a `prompt`), or `action='dismiss'` to cancel; `action='status'`
+just checks whether one is open. A dialog is the app asking for a decision, **not a bug** — and an
+unanswered `confirm`/`prompt` makes every following action look like it "did nothing", so answer it
+before continuing. This is how you exercise delete/leave confirmations: trigger the action, then
+`browser_dialog('accept')` (or `'dismiss'` to test the cancel path) and verify what the app did.
+
 ## Browser Console Rules
 
 - **Always wrap `browser_console` JavaScript in an IIFE**: `(() => { const btn = ...; return btn?.textContent })()`.

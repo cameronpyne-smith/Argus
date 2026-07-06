@@ -290,13 +290,35 @@ def test_registry_stop(chrome_cdp, supervisor_registry):
     assert supervisor.snapshot().active is False
 
 
-def test_browser_dialog_tool_no_supervisor():
-    """browser_dialog returns a clear error when no supervisor is attached."""
-    from tools.browser_dialog_tool import browser_dialog
+def test_browser_dialog_tool_no_supervisor_uses_local_cli():
+    """With no supervisor, browser_dialog falls back to the local CLI verb."""
+    from unittest.mock import patch
+    import tools.browser_dialog_tool as bdt
 
-    r = json.loads(browser_dialog(action="accept", task_id="nonexistent-task"))
-    assert r["success"] is False
-    assert "No CDP supervisor" in r["error"]
+    with patch("tools.browser_tool._run_browser_command") as run, \
+         patch("tools.browser_tool._last_session_key", side_effect=lambda t: t):
+        run.return_value = {"success": True, "data": {"accepted": True, "handled": True}}
+        r = json.loads(bdt.browser_dialog(action="accept", task_id="nonexistent-task"))
+
+    assert r["success"] is True
+    assert r["action"] == "accept"
+    # Routed through the agent-browser `dialog accept` CLI verb.
+    call = run.call_args
+    assert call.args[1] == "dialog"
+    assert call.args[2] == ["accept"]
+
+
+def test_browser_dialog_local_prompt_text_forwarded():
+    """accept + prompt_text is forwarded to the CLI as a positional arg."""
+    from unittest.mock import patch
+    import tools.browser_dialog_tool as bdt
+
+    with patch("tools.browser_tool._run_browser_command") as run, \
+         patch("tools.browser_tool._last_session_key", side_effect=lambda t: t):
+        run.return_value = {"success": True, "data": {}}
+        bdt.browser_dialog(action="accept", prompt_text="hello", task_id="t")
+
+    assert run.call_args.args[2] == ["accept", "hello"]
 
 
 def test_browser_dialog_invalid_action(chrome_cdp, supervisor_registry):

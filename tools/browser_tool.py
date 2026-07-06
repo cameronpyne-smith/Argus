@@ -2473,6 +2473,39 @@ def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
     except Exception as e:
         _warn_once_server_error_poll_failed(e)
 
+    # Surface a native JS dialog left open by this action (local backend). A
+    # synchronous confirm()/prompt() blocks the page until answered; without
+    # this the agent sees a click that "did nothing" and files a false bug.
+    # The signal tells it to respond with browser_dialog(accept|dismiss).
+    # Supervisor-backed sessions already expose pending_dialogs via the
+    # snapshot merge, so only poll the local CLI path here.
+    try:
+        if _is_local_backend() and not _is_camofox_mode():
+            dlg = _run_browser_command(
+                effective_task_id, "dialog", ["status"], timeout=10
+            )
+            if dlg.get("success"):
+                data = dlg.get("data", {}) or {}
+                # agent-browser reports {"hasDialog": bool}; tolerate a couple
+                # of alternate spellings in case the shape shifts.
+                is_open = (
+                    data.get("hasDialog")
+                    or data.get("open")
+                    or data.get("isOpen")
+                    or data.get("pending")
+                )
+                if is_open:
+                    response["pending_dialog"] = data
+                    response["pending_dialog_hint"] = (
+                        "A native JS dialog (alert/confirm/prompt) is open and "
+                        "blocking the page. Respond with browser_dialog(action="
+                        "'accept') or ('dismiss') — a confirm/prompt left open "
+                        "makes every following action appear to do nothing. "
+                        "This dialog is the app asking for a decision, not a bug."
+                    )
+    except Exception as e:
+        logger.debug("post-action dialog surfacing failed: %s", e)
+
 
 # ============================================================================
 # Browser Tool Functions
