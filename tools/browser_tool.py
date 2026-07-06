@@ -3491,6 +3491,60 @@ def browser_fill_form(fields, submit_ref: Optional[str] = None, task_id: Optiona
     return json.dumps(response, ensure_ascii=False)
 
 
+# Output caps for console/eval results. These land verbatim in the model's
+# context (the harness result-size budget only spills to disk far above these
+# sizes), and a render-loop page or a `document.body.innerHTML` eval can emit
+# tens of thousands of chars in one call — enough to evict the working state
+# of a small-context local model. Totals are always reported so the model
+# knows when it is seeing a window, not the whole buffer.
+_CONSOLE_MAX_MESSAGES = 40
+_CONSOLE_MAX_ERRORS = 20
+_CONSOLE_MSG_MAX_CHARS = 300
+_EVAL_RESULT_MAX_CHARS = 8000
+
+
+def _cap_console_entries(entries: list, limit: int, text_key: str) -> tuple:
+    """Truncate long entries, collapse consecutive duplicates, keep the newest.
+
+    Returns (capped_entries, raw_total).
+    """
+    total = len(entries)
+    collapsed: list = []
+    for entry in entries:
+        text = entry.get(text_key) or ""
+        if len(text) > _CONSOLE_MSG_MAX_CHARS:
+            entry = {
+                **entry,
+                text_key: text[:_CONSOLE_MSG_MAX_CHARS]
+                + f"… [+{len(text) - _CONSOLE_MSG_MAX_CHARS} chars]",
+            }
+        prev = collapsed[-1] if collapsed else None
+        if prev is not None and {
+            k: v for k, v in prev.items() if k != "repeat_count"
+        } == entry:
+            prev["repeat_count"] = prev.get("repeat_count", 1) + 1
+        else:
+            collapsed.append(dict(entry))
+    return collapsed[-limit:], total
+
+
+def _cap_eval_result(parsed: Any) -> tuple:
+    """Bound an eval result's serialized size. Returns (result, note_or_None)."""
+    try:
+        serialized = json.dumps(parsed, ensure_ascii=False, default=str)
+    except Exception:
+        serialized = str(parsed)
+    if len(serialized) <= _EVAL_RESULT_MAX_CHARS:
+        return parsed, None
+    note = (
+        f"Result truncated: {len(serialized)} chars serialized, first "
+        f"{_EVAL_RESULT_MAX_CHARS} shown. Evaluate a narrower expression "
+        f"(a specific field, .length, a slice) instead of dumping whole "
+        f"objects or DOM."
+    )
+    return serialized[:_EVAL_RESULT_MAX_CHARS], note
+
+
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
 
@@ -3544,13 +3598,25 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
                 "source": "exception",
             })
 
+    messages, total_messages = _cap_console_entries(
+        messages, _CONSOLE_MAX_MESSAGES, "text"
+    )
+    errors, total_errors = _cap_console_entries(errors, _CONSOLE_MAX_ERRORS, "message")
+
     response = {
         "success": True,
         "console_messages": messages,
         "js_errors": errors,
-        "total_messages": len(messages),
-        "total_errors": len(errors),
+        "total_messages": total_messages,
+        "total_errors": total_errors,
     }
+    if total_messages > len(messages) or total_errors > len(errors):
+        response["truncation_note"] = (
+            "Buffers exceed the display cap — showing only the most recent "
+            f"{_CONSOLE_MAX_MESSAGES} messages / {_CONSOLE_MAX_ERRORS} errors "
+            "(consecutive duplicates collapsed with repeat_count). Pass "
+            "clear=true to reset the buffers."
+        )
     _copy_fallback_warning(response, console_result)
     if errors_result.get("fallback_warning") and not response.get("fallback_warning"):
         _copy_fallback_warning(response, errors_result)
@@ -3585,12 +3651,15 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                         parsed = json.loads(raw_result)
                     except (json.JSONDecodeError, ValueError):
                         pass  # keep as string
+                capped, trunc_note = _cap_eval_result(parsed)
                 response = {
                     "success": True,
-                    "result": parsed,
+                    "result": capped,
                     "result_type": type(parsed).__name__,
                     "method": "cdp_supervisor",
                 }
+                if trunc_note:
+                    response["result_truncated"] = trunc_note
                 return json.dumps(response, ensure_ascii=False, default=str)
             # JS exception is a real failure — surface it instead of falling
             # through to the subprocess path (which would just re-run and
@@ -3639,11 +3708,14 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         except (json.JSONDecodeError, ValueError):
             pass  # keep as string
 
+    capped, trunc_note = _cap_eval_result(parsed)
     response = {
         "success": True,
-        "result": parsed,
+        "result": capped,
         "result_type": type(parsed).__name__,
     }
+    if trunc_note:
+        response["result_truncated"] = trunc_note
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
 
 
@@ -3664,11 +3736,15 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        return json.dumps({
+        capped, trunc_note = _cap_eval_result(parsed)
+        response = {
             "success": True,
-            "result": parsed,
+            "result": capped,
             "result_type": type(parsed).__name__,
-        }, ensure_ascii=False, default=str)
+        }
+        if trunc_note:
+            response["result_truncated"] = trunc_note
+        return json.dumps(response, ensure_ascii=False, default=str)
     except Exception as e:
         error_msg = str(e)
         # Graceful degradation — server may not support eval
