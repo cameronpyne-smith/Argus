@@ -13,7 +13,7 @@
 #   argus-regress --limit 5            # first 5 (oldest) only
 #   argus-regress --close              # auto-close issues that appear fixed
 #   argus-regress --provider auto -m gpt-4.1   # replay against a cloud model
-# Runs use the local qwen variant by default (--provider local -m qwen3.6-argus128k);
+# Runs use the local gemma variant by default (--provider local -m gemma4-argus64k);
 # --model / --provider override it. --local is a back-compat no-op alias.
 #
 # Division of labour (same decide/execute split as argus-file-issues):
@@ -42,12 +42,12 @@ ISSUE_NUMS=()
 LIMIT=""
 PERSONA_OVERRIDE=""
 MAX_TURNS=60
-# Model + provider both default to the local qwen variant and are independently
+# Model + provider both default to the local gemma variant and are independently
 # overridable (--model / --provider). Same baked-num_ctx rationale as argus-test
 # — see its header. PROVIDER_FLAGS is assembled after parsing; for a cloud box:
 # --provider auto -m gpt-4.1.
 PROVIDER="local"
-MODEL="qwen3.6-argus128k"
+MODEL="gemma4-argus64k"
 # Per-issue wall-clock cap. A replay is a short, scripted walk (login + a few
 # steps + one screenshot) — far less than a QA session's 2400s.
 REGRESS_TIMEOUT="${REGRESS_TIMEOUT:-1200}"
@@ -57,8 +57,8 @@ CLOSE_FIXED="${CLOSE_FIXED:-false}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      # Back-compat alias: local qwen is now the default, so this is a no-op.
-      PROVIDER="local"; MODEL="qwen3.6-argus128k"; shift ;;
+      # Back-compat alias: local gemma is now the default, so this is a no-op.
+      PROVIDER="local"; MODEL="gemma4-argus64k"; shift ;;
     --model|-m)
       MODEL="$2"; shift 2 ;;
     --provider)

@@ -16,18 +16,18 @@ set -euo pipefail
 
 REPO="remundo-xml/Remundo.Ui.Platform"
 REPORT_FILE=""
-# Model + provider default to the local qwen variant and are independently
+# Model + provider default to the local gemma variant and are independently
 # overridable. argus-test forwards its own expanded --provider/--model here, so
 # these SET (not append) — the forwarded values win. For a cloud box run
 # standalone: --provider auto -m gpt-4.1.
 PROVIDER="local"
-MODEL="qwen3.6-argus128k"
+MODEL="gemma4-argus64k"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      # Back-compat alias: local qwen is now the default, so this is a no-op.
-      PROVIDER="local"; MODEL="qwen3.6-argus128k"; shift ;;
+      # Back-compat alias: local gemma is now the default, so this is a no-op.
+      PROVIDER="local"; MODEL="gemma4-argus64k"; shift ;;
     --model|-m)
       MODEL="$2"; shift 2 ;;
     --provider)

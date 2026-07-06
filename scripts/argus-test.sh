@@ -8,9 +8,9 @@
 # History lives in /opt/data/reports/. The agent only ever sees the index's
 # chosen slice: its one area file, copied into /opt/data/run/.
 #
-# Model + provider: both default to the local qwen variant
-# (--provider local -m qwen3.6-argus128k) and are independently overridable:
-#   --model  <name>       inference model      (default qwen3.6-argus128k)
+# Model + provider: both default to the local gemma variant
+# (--provider local -m gemma4-argus64k) and are independently overridable:
+#   --model  <name>       inference model      (default gemma4-argus64k)
 #   --provider <name>     inference provider   (default local; built-in or a
 #                         name from providers: in config.yaml — 'auto' picks the
 #                         config default, e.g. cloud gpt-4.1)
@@ -41,8 +41,10 @@
 # Prerequisite for local runs (host-side, one-time): Ollama's /v1 endpoint ignores
 # per-request num_ctx, so the local default uses a model variant with the context window
 # baked into its Modelfile. Create them once (they share blobs with the base):
-#   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 131072\n' | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus128k -f /tmp/mf
-#   printf 'FROM qwen3.6:35b\nPARAMETER num_ctx 65536\n'  | tee /tmp/mf >/dev/null && ollama create qwen3.6-argus64k  -f /tmp/mf
+#   printf 'FROM gemma4:31b\nPARAMETER num_ctx 65536\n' | tee /tmp/mf >/dev/null && ollama create gemma4-argus64k -f /tmp/mf
+# (64K is the fit ceiling for the dense 31B on a 32GB GPU: 30GB total, 100% GPU.
+# A 128K variant needs 36GB and spills to CPU. The qwen3.6-argus64k/128k variants
+# remain usable via --model — pair them with a matching ARGUS_NUM_CTX.)
 # If host Ollama models are reset, recreate these or runs fall back to 32K.
 # Keep the variant's num_ctx coherent with ARGUS_NUM_CTX (entrypoint sets
 # context_length to match the variant, else Hermes over-fills and Ollama truncates).
@@ -84,20 +86,20 @@ PERSONA="candidate"
 # Session length (150 turns). Sessions used to be kept short because the context
 # compressor could no-op on long agentic sessions and pin them at the old 32K
 # ceiling; every babysitter continuation restarts with freshly compressed context
-# (~10-20K). With the 128K local variant that ceiling is far higher, so a longer
+# (~10-20K). With the 64K local variant that ceiling is far higher, so a longer
 # session has real headroom — and the stateful bug classes (create→edit→delete,
 # interrupted wizards, double-submit) need several uninterrupted turns to set up,
 # which a too-short session cuts off mid-sequence. Override with --max-turns.
 MAX_TURNS=150
-# Model + provider both default to the local qwen variant and are independently
-# overridable (--model / --provider). qwen3.6-argus128k = qwen3.6:35b with
-# PARAMETER num_ctx 131072 baked in — Ollama's /v1 (OpenAI-compat) endpoint
+# Model + provider both default to the local gemma variant and are independently
+# overridable (--model / --provider). gemma4-argus64k = gemma4:31b (dense) with
+# PARAMETER num_ctx 65536 baked in — Ollama's /v1 (OpenAI-compat) endpoint
 # IGNORES per-request num_ctx, so a baked variant is the ONLY way to run >32768.
 # Keep the model in sync with context_length (entrypoint ARGUS_NUM_CTX) and the
 # vision model (entrypoint ARGUS_LOCAL_MODEL). PROVIDER_FLAGS is assembled from
 # these after arg parsing. For a cloud box: --provider auto -m gpt-4.1.
 PROVIDER="local"
-MODEL="qwen3.6-argus128k"
+MODEL="gemma4-argus64k"
 # Hard wall-clock cap per agent session — the backstop for a hung model call
 # (a qwen stream once stalled mid-response and never returned). timeout sends
 # SIGTERM (not SIGINT: SIGINT triggers Hermes' graceful shutdown which itself
@@ -134,9 +136,9 @@ VERIFY_MAX_TURNS="${VERIFY_MAX_TURNS:-60}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
-      # Back-compat alias: the local qwen variant is now the default, so this
+      # Back-compat alias: the local gemma variant is now the default, so this
       # just re-asserts it. Prefer --provider/--model directly.
-      PROVIDER="local"; MODEL="qwen3.6-argus128k"; shift ;;
+      PROVIDER="local"; MODEL="gemma4-argus64k"; shift ;;
     --model|-m)
       # Inference model, e.g. --model qwen3.6:35b or (with --provider auto) gpt-4.1
       MODEL="$2"; shift 2 ;;

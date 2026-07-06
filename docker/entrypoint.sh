@@ -215,12 +215,12 @@ content = re.sub(r'^(\s+tool_use_enforcement:\s*).*$', r'\g<1>true', content, fl
 # its system prompt/goal/credentials mid-run and the prompt prefix cache
 # never hit (1-2s turns degraded to 100s+).
 # Context window is env-tunable via ARGUS_NUM_CTX (default 65536 = 64K).
-#   64K  fits qwen3.6:35b Q4 (23GB) + fp16 KV on a 32GB GPU (~29GB total).
-#   128K needs q8_0 KV + flash-attn ON the Ollama server (OLLAMA_KV_CACHE_TYPE=
-#        q8_0, OLLAMA_FLASH_ATTENTION=1) or it OOMs/offloads to RAM.
+#   64K  fits gemma4:31b Q4 (19GB) + KV on a 32GB GPU (30GB total, 100% GPU).
+#   128K needs 36GB for gemma4:31b and spills to CPU, unless the Ollama server
+#        runs q8_0 KV + flash-attn (OLLAMA_KV_CACHE_TYPE=q8_0, OLLAMA_FLASH_ATTENTION=1).
 # num_ctx (Ollama's real window), context_length (Hermes' belief) and the
 # compression trigger MUST agree — a mismatch silently truncates every request.
-NUM_CTX = int(os.environ.get("ARGUS_NUM_CTX", "131072"))
+NUM_CTX = int(os.environ.get("ARGUS_NUM_CTX", "65536"))
 
 def set_or_insert_model_key(content, key, value):
     if re.search(rf'^\s+{key}:', content, flags=re.MULTILINE):
@@ -280,7 +280,7 @@ else:
 # (gpt-4.1/4o are genuinely multimodal — real vision, not qwen's marginal output.)
 # NOTE: do NOT leave base_url empty hoping to "inherit" — the aux then falls back
 # to the model-block default and mis-routes; always set the endpoint explicitly.
-_VISION_MODEL    = os.environ.get("ARGUS_VISION_MODEL", os.environ.get("ARGUS_LOCAL_MODEL", "qwen3.6-argus128k"))
+_VISION_MODEL    = os.environ.get("ARGUS_VISION_MODEL", os.environ.get("ARGUS_LOCAL_MODEL", "gemma4-argus64k"))
 _VISION_BASE_URL = os.environ.get("ARGUS_VISION_BASE_URL", "http://localhost:11434/v1")
 _VISION_API_KEY  = os.environ.get("ARGUS_VISION_API_KEY", "ollama")
 def _patch_vision(c):
