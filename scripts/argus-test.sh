@@ -132,6 +132,13 @@ VERIFY_MODEL=""
 VERIFY_PROVIDER=""
 VERIFY_SESSION_TIMEOUT="${VERIFY_SESSION_TIMEOUT:-1200}"
 VERIFY_MAX_TURNS="${VERIFY_MAX_TURNS:-60}"
+# Total wall-clock budget for the whole verification pass. Per-bug retries are
+# bounded (3 × VERIFY_SESSION_TIMEOUT) but with many candidates the pass could
+# legally run for hours — long past any governor cap, which would kill it
+# mid-verify and strand every recorded bug un-assembled. Once the budget is
+# spent, remaining bugs are KEPT but marked unverified instead of being
+# silently lost.
+VERIFY_TOTAL_BUDGET="${VERIFY_TOTAL_BUDGET:-3600}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -383,8 +390,29 @@ LOGIN_STEP="Log in to https://${SITE_HOST} as persona '${PERSONA}' before testin
 
 # ── Run dir: ALL agent file IO happens in /opt/data/run — one short path the
 # model can reliably retain under context compression.
+# A clean run MOVES the run dir into reports/parts/ at the end, so bug files
+# still sitting here mean the previous run was killed before assembly (e.g. a
+# governor TERM mid-verify). Salvage them instead of deleting the only copy of
+# that run's evidence.
+if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+  SALVAGE_DIR="/opt/data/reports/parts/salvage-$(date +%Y%m%d-%H%M%S)"
+  mv "$RUN_DIR" "$SALVAGE_DIR"
+  echo "▶ Previous run left unassembled bug files (interrupted before assembly) — salvaged to ${SALVAGE_DIR}"
+fi
 rm -rf "$RUN_DIR"
 mkdir -p "$RUN_DIR"
+
+# Same protection while THIS run is alive: on TERM/INT, save whatever bugs are
+# recorded before dying, so a kill mid-verify can never destroy the evidence.
+on_interrupt() {
+  trap - TERM INT
+  if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+    d="/opt/data/reports/parts/salvage-$(date +%Y%m%d-%H%M%S)"
+    mv "$RUN_DIR" "$d" 2>/dev/null && echo "⚠ Interrupted — recorded bug files salvaged to $d"
+  fi
+  exit 143
+}
+trap on_interrupt TERM INT
 if [[ "$DISCOVER" == "true" ]]; then
   # Discovery gets the index (read-only copy) so its job is "find what is
   # missing from this list" — the one mode where the model sees the index.
@@ -431,11 +459,30 @@ if [[ -n "$VIEWPORT" ]]; then
 fi
 echo ""
 
+# Session-health tracking. Every `argus chat` failure below is deliberately
+# non-fatal (the post-run must still assemble whatever was recorded), but that
+# used to hide total failure: with Ollama down, each session exits instantly,
+# the bug count never moves, and three barren "continuations" read as
+# "Converged: clean area" — stamping the ledger for an area that was never
+# tested. A session counts as healthy if it exited 0 OR ran long enough to
+# have actually been exploring (a dead model/CLI fails in seconds).
+SESSION_OK=false
+note_session_health() {  # $1 exit code, $2 duration seconds
+  if [[ $1 -eq 0 || $2 -ge 120 ]]; then
+    SESSION_OK=true
+  fi
+  if [[ $1 -ne 0 ]]; then
+    echo "⚠ agent session exited abnormally (exit $1 after $2s) — continuing with post-run"
+  fi
+}
+
 # Toolsets are restricted to what a QA run needs: every extra toolset adds
 # tool schemas to the fixed prompt prefix, which costs context and slows
 # every single model call.
 if [[ "$DISCOVER" == "true" ]]; then
   NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. Continue mapping the site per your original instructions: walk every navigation surface, append one '<area-name> | <exact URL>' line per newly found area to /opt/data/run/new-areas.md, and when you have covered all navigation write /opt/data/run/summary.md listing what you mapped."
+  SESSION_T0=$SECONDS
+  AGENT_RC=0
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
@@ -462,9 +509,12 @@ Process:
 When you have walked all navigation — or are running low on turns:
 - Write /opt/data/run/summary.md with write_file: which navigation surfaces you covered and which you could not reach
 - Print the list of newly discovered areas as your final message." \
-    $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
+    $PROVIDER_FLAGS || AGENT_RC=$?
+  note_session_health "$AGENT_RC" "$((SECONDS - SESSION_T0))"
 else
   NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. FIRST, before anything else: if you have ALREADY confirmed any bug this run that you have NOT yet written to a file, write_file it NOW — do not keep testing while a confirmed bug is unsaved. Then continue testing the '${AREA}' area per your original instructions. Record every confirmed bug the INSTANT you confirm it (your very next tool call is write_file) to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). Never say 'let me record this and continue' and then continue without writing — write the file first. Do NOT write /opt/data/run/summary.md until every applicable deep-coverage item from your original instructions has been attempted OR recorded as blocked. Work them in this order: (1) authorization — mutate any id in the URL and navigate to the cross-persona URLs from site-config; (2) persistence across reload; (3) browser back/forward/refresh; (4) double-submit; (5) full create→edit→delete lifecycle. Treat each item as independent: if a feature is broken and blocks its item, write its bug file immediately, mark the item blocked, and move on — do not get stuck re-testing it across continuations. A button that does nothing or stays disabled is usually a stale ref or an uncommitted required field, not a bug — re-snapshot and confirm committed values before filing, and never force it with JavaScript. Once every item is attempted or blocked, rewrite /opt/data/run/area.md (current facts, what remains untested, plus any hunch or anomaly worth chasing next time; max 50 lines) and write /opt/data/run/summary.md (each item's outcome).${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}${KNOWN_NUDGE_LINE}"
+  SESSION_T0=$SECONDS
+  AGENT_RC=0
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --max-turns "$MAX_TURNS" \
@@ -523,7 +573,8 @@ When finished — and ONLY after every applicable checklist item above has been 
 - Print a short list of the bugs you recorded as your final message.
 
 Do NOT write summary.md while an applicable checklist item is still unattempted-and-unblocked. Once the checklist is cleared, finish promptly — do not keep re-testing a blocked feature to burn turns." \
-  $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
+  $PROVIDER_FLAGS || AGENT_RC=$?
+  note_session_health "$AGENT_RC" "$((SECONDS - SESSION_T0))"
 fi
 
 echo ""
@@ -543,12 +594,15 @@ PREV_BUGS=$(count_bugs)
 while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 8 ]]; do
   NUDGES=$((NUDGES + 1))
   echo "▶ Session ended without finishing (no summary.md) — continuing session (nudge $NUDGES/8)..."
+  SESSION_T0=$SECONDS
+  AGENT_RC=0
   # shellcheck disable=SC2086
   timeout --signal=TERM --kill-after=30 "$SESSION_TIMEOUT" \
     argus chat --continue --max-turns 150 \
     -t browser,skills_ro,file,terminal \
     -q "$NUDGE_PROMPT" \
-    $PROVIDER_FLAGS || echo "⚠ agent session exited abnormally — continuing with post-run"
+    $PROVIDER_FLAGS || AGENT_RC=$?
+  note_session_health "$AGENT_RC" "$((SECONDS - SESSION_T0))"
   echo ""
   # NB: every conditional below uses if/fi, never '[[ ]] && cmd' — under set -e
   # a statement-level '&&' whose test is false returns 1 and EXITS the script.
@@ -568,6 +622,15 @@ while [[ ! -f "$RUN_DIR/summary.md" && $NUDGES -lt 8 ]]; do
   fi
   PREV_BUGS="$CUR_BUGS"
 done
+
+# Hard stop when nothing actually ran: no healthy session means the
+# "convergence" above was just repeated instant failures, not a tested area.
+# Do NOT stamp the ledger or write anything back — exit loudly instead, so the
+# area stays marked stale and the next healthy run picks it up first.
+if [[ "$SESSION_OK" != "true" ]]; then
+  echo "✗ No agent session ran successfully (model/CLI failure) — aborting without touching the ledger."
+  exit 70
+fi
 
 # ── From here down is best-effort bookkeeping (hygiene, stamp, assemble,
 # file). Disable errexit for it: a single non-zero return (a grep that
@@ -613,8 +676,13 @@ done
 # code they must share a near-identical normalised title. Extras are moved to
 # run/duplicates/ (excluded from the report + filing) with a note folded into the
 # survivor, and every merge is logged — never a silent drop.
-norm_url() {  # strip scheme+host, query, and id-ish path segments
-  printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E "s#^https?://[^/]+##; s/\?.*\$//; s#/[0-9a-f]{8}-[0-9a-f-]{4,}#/:id#g; s#/[0-9]+#/:id#g; s#/+\$##"
+norm_url() {  # trim whitespace, strip scheme+host, query, and id-ish path segments
+  # The leading trim is load-bearing: known.md read-back extracts fields with
+  # cut -d'|', which keeps the spaces around the delimiter — without trimming,
+  # the read-back key can NEVER equal a freshly built key, so every
+  # re-confirmed bug is appended again and the size cap then evicts real
+  # entries.
+  printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E "s/^[[:space:]]+//; s/[[:space:]]+\$//; s#^https?://[^/]+##; s/\?.*\$//; s#/[0-9a-f]{8}-[0-9a-f-]{4,}#/:id#g; s#/[0-9]+#/:id#g; s#/+\$##"
 }
 if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
   mkdir -p "$RUN_DIR/duplicates"
@@ -665,8 +733,16 @@ if [[ "$VERIFY" == "true" && "$DISCOVER" != "true" ]] && ls "$RUN_DIR"/bug-*.md 
   echo ""
   echo "▶ Verification pass (${VERIFY_PROVIDER}/${VERIFY_MODEL}): independently re-checking each recorded bug in a fresh session..."
   mkdir -p "$RUN_DIR/rejected"
+  VERIFY_T0=$SECONDS
   for b in "$RUN_DIR"/bug-*.md; do
     [[ -f "$b" ]] || continue
+    if [[ $((SECONDS - VERIFY_T0)) -ge $VERIFY_TOTAL_BUDGET ]]; then
+      echo "  ⏱ verify budget (${VERIFY_TOTAL_BUDGET}s) exhausted — keeping remaining bugs unverified"
+      if ! grep -qi '^Verification:' "$b"; then
+        printf '\nVerification: NOT verified — verify time budget exhausted before this bug; treat with caution.\n' >> "$b"
+      fi
+      continue
+    fi
     slug="$(basename "$b" .md)"
     verdict_file="$RUN_DIR/verdict-${slug}.txt"
     rm -f "$verdict_file"
