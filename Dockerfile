@@ -126,5 +126,11 @@ COPY --chmod=0755 scripts/argus-regress.sh /usr/local/bin/argus-regress
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
+# Skills are read-only for agent sessions in this image: skill_manage refuses
+# all mutating actions (a QA run once rmtree'd its own guidance skill). Image
+# ENV — not just an entrypoint export — because QA runs enter via docker exec,
+# which never sees the entrypoint's environment. Override per-exec with
+# `docker exec -e ARGUS_SKILLS_READONLY=0` when skills genuinely need editing.
+ENV ARGUS_SKILLS_READONLY=1
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]

@@ -172,6 +172,14 @@ PYEOF
     fi
 fi
 
+# Skills are read-only for every agent session in this container. The pin
+# above only guards DELETION and both in-tool guards depend on a readable
+# sidecar; this env gate makes skill_manage refuse ALL mutating actions at
+# its single chokepoint — image-level, so it holds even when a stale baked
+# run script requests the full skills toolset instead of skills_ro. Operator
+# override: set ARGUS_SKILLS_READONLY=0 in the volume .env.
+export ARGUS_SKILLS_READONLY="${ARGUS_SKILLS_READONLY:-1}"
+
 # Remove the nested qa/ skill tree from the data volume. The QA skills were
 # already flattened into /skills/<name>/ above; leaving the nested copies in
 # place makes skill names ambiguous ("2 skills match") and skill_view refuses

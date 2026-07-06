@@ -142,8 +142,10 @@ def _pinned_guard(name: str) -> Optional[str]:
     agent can still patch/edit pinned skills; pin only guards against
     irrecoverable loss, not against content evolution.
 
-    Best-effort: if the sidecar is unreadable we let the delete through
-    rather than block on a broken telemetry file.
+    Fail-closed: if the sidecar is unreadable we cannot prove the skill is
+    NOT pinned, so the delete is refused — a broken telemetry file must not
+    quietly disarm the one guard protecting pinned skills from
+    irrecoverable loss.
     """
     try:
         from tools import skill_usage
@@ -157,7 +159,16 @@ def _pinned_guard(name: str) -> Optional[str]:
                 f"deletion is blocked."
             )
     except Exception:
-        logger.debug("pinned-guard lookup failed for %s", name, exc_info=True)
+        logger.warning(
+            "pinned-guard lookup failed for %s — refusing the delete "
+            "(fail-closed)", name, exc_info=True,
+        )
+        return (
+            f"Cannot verify whether skill '{name}' is pinned (the pin "
+            f"sidecar is unreadable), so the delete is refused. If removal "
+            f"is truly intended, the user should delete its directory "
+            f"directly."
+        )
     return None
 
 
@@ -592,7 +603,22 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
                 ),
             }
     except Exception:
-        logger.debug("agent-created check failed for %s during delete", name, exc_info=True)
+        # Fail CLOSED: an ImportError or broken sidecar used to silently
+        # ALLOW the delete — every protection on this path degraded to
+        # "permit" exactly when the environment was already unhealthy.
+        logger.warning(
+            "agent-created check failed for %s during delete — refusing the "
+            "delete (fail-closed)", name, exc_info=True,
+        )
+        return {
+            "success": False,
+            "error": (
+                f"Cannot verify that skill '{name}' is agent-created (the "
+                f"provenance check itself failed), so the delete is refused. "
+                f"If removal is truly intended, the user should delete its "
+                f"directory directly."
+            ),
+        }
 
     # Validate absorbed_into target when declared non-empty
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
@@ -747,6 +773,21 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    # Fail-closed hard gate for autonomous QA runs. Every action this tool
+    # dispatches is mutating, and an Argus agent once deleted its OWN skill
+    # mid-run (hard rmtree), poisoning the rest of the run into false
+    # Criticals. The run scripts already request the read-only skills_ro
+    # toolset, but that lives in the (rebuild-lagged) baked image — this env
+    # gate is set by the container entrypoint, so it holds even when a stale
+    # image exposes the full skills toolset.
+    if is_truthy_value(os.getenv("ARGUS_SKILLS_READONLY"), default=False):
+        return tool_error(
+            "Skill mutation is disabled for this run (ARGUS_SKILLS_READONLY=1). "
+            "Skills are read-only during QA runs — if a skill needs fixing, "
+            "note it in /opt/data/run/area.md instead.",
+            success=False,
+        )
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
