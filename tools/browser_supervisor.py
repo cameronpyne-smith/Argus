@@ -75,6 +75,14 @@ _DIALOG_BRIDGE_SCRIPT = r"""
   if (window.__hermesDialogBridgeInstalled) return;
   window.__hermesDialogBridgeInstalled = true;
   const ENDPOINT = "http://hermes-dialog-bridge.invalid/";
+  // Distinct sentinel for "the bridge itself is unreachable" (Fetch
+  // interception off, supervisor reconnecting, non-200, unparseable body) —
+  // it must never be conflated with a deliberate cancel/null answer.
+  // Bridge-down falls back to the ORIGINAL native dialog so the page still
+  // blocks and Page.javascriptDialogOpening surfaces it; silently answering
+  // "cancel" here made clicks look like dead buttons and produced false
+  // "delete does nothing" bug reports.
+  const BRIDGE_DOWN = {};
   function ask(kind, message, defaultPrompt) {
     try {
       const xhr = new XMLHttpRequest();
@@ -87,10 +95,10 @@ _DIALOG_BRIDGE_SCRIPT = r"""
       });
       xhr.open("GET", ENDPOINT + "?" + params.toString(), false);  // sync
       xhr.send(null);
-      if (xhr.status !== 200) return null;
+      if (xhr.status !== 200) return BRIDGE_DOWN;
       const body = xhr.responseText || "";
       let parsed;
-      try { parsed = JSON.parse(body); } catch (e) { return null; }
+      try { parsed = JSON.parse(body); } catch (e) { return BRIDGE_DOWN; }
       if (kind === "alert") return undefined;
       if (kind === "confirm") return Boolean(parsed && parsed.accept);
       if (kind === "prompt") {
@@ -99,21 +107,23 @@ _DIALOG_BRIDGE_SCRIPT = r"""
       }
       return null;
     } catch (e) {
-      // If the bridge is unreachable, fall back to the native call so the
-      // page still sees *some* behavior (the backend will auto-dismiss).
-      return null;
+      return BRIDGE_DOWN;
     }
   }
   const realAlert   = window.alert;
   const realConfirm = window.confirm;
   const realPrompt  = window.prompt;
-  window.alert   = function(message) { ask("alert",   message, ""); };
+  window.alert   = function(message) {
+    if (ask("alert", message, "") === BRIDGE_DOWN) return realAlert.call(window, message);
+  };
   window.confirm = function(message) {
     const r = ask("confirm", message, "");
+    if (r === BRIDGE_DOWN) return realConfirm.call(window, message);
     return r === null ? false : Boolean(r);
   };
   window.prompt  = function(message, def) {
     const r = ask("prompt", message, def == null ? "" : def);
+    if (r === BRIDGE_DOWN) return realPrompt.call(window, message, def == null ? "" : def);
     return r === null ? null : String(r);
   };
   // onbeforeunload — we can't really synchronously prompt the user from this
@@ -748,8 +758,12 @@ class CDPSupervisor:
                 timeout=5.0,
             )
         except Exception as e:
-            logger.debug(
-                "dialog bridge: Fetch.enable failed on sid=%s: %s",
+            # Warning, not debug: with Fetch interception off, the injected
+            # overrides run in bridge-down fallback mode (native dialogs) —
+            # page semantics change and dialogs stop being agent-answerable.
+            logger.warning(
+                "dialog bridge: Fetch.enable failed on sid=%s — dialogs fall "
+                "back to native handling: %s",
                 (session_id or "")[:16], e,
             )
         # Also try to inject into the already-loaded document so existing
