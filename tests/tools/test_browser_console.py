@@ -49,6 +49,23 @@ class TestBrowserConsole:
         assert result["console_messages"][1]["text"] == "oops"
         assert result["js_errors"][0]["message"] == "Uncaught TypeError"
 
+    def test_js_error_uses_text_field(self):
+        # agent-browser reports the JS error under "text", not "message";
+        # browser_console must surface it (matching the passive oracle) instead
+        # of returning an empty string.
+        from tools.browser_tool import browser_console
+
+        console_response = {"success": True, "data": {"messages": []}}
+        errors_response = {
+            "success": True,
+            "data": {"errors": [{"text": "Uncaught ReferenceError: foo", "line": 12}]},
+        }
+        with patch("tools.browser_tool._run_browser_command") as mock_cmd:
+            mock_cmd.side_effect = [console_response, errors_response]
+            result = json.loads(browser_console(task_id="test"))
+
+        assert result["js_errors"][0]["message"] == "Uncaught ReferenceError: foo"
+
     def test_passes_clear_flag(self):
         from tools.browser_tool import browser_console
 

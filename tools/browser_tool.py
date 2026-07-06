@@ -3502,8 +3502,12 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     errors = []
     if errors_result.get("success"):
         for err in errors_result.get("data", {}).get("errors", []):
+            # agent-browser reports the error under "text"; fall back to
+            # "message" for other backends. Reading only "message" left the
+            # agent seeing empty strings when it drilled into a new_js_errors
+            # hint (the passive oracle reads "text" — this must match).
             errors.append({
-                "message": err.get("message", ""),
+                "message": err.get("text") or err.get("message") or "",
                 "source": "exception",
             })
 
