@@ -1069,9 +1069,27 @@ _last_snapshot_hash: Dict[str, str] = {}
 # very often the bug itself).
 _seen_console_errors: Dict[str, set] = {}
 # Per-session set of HTTP 5xx server errors already surfaced (keyed
-# "<status> <method> <url>"), so a recurring server fault is reported once, not
-# on every subsequent action. Populated by _attach_post_action_snapshot.
+# "<status> <method> <url-sans-query>"), so a recurring server fault is
+# reported once, not on every subsequent action. Populated by
+# _attach_new_error_signals.
 _seen_server_errors: Dict[str, set] = {}
+
+# Warn-once flag for a failing server-error poll: if the installed
+# agent-browser lacks `network requests --status`, the 5xx oracle is dead for
+# the whole run — that must be visible in the logs, not a DEBUG whisper.
+_server_error_poll_warned = False
+
+
+def _warn_once_server_error_poll_failed(err: object) -> None:
+    global _server_error_poll_warned
+    if _server_error_poll_warned:
+        return
+    _server_error_poll_warned = True
+    logger.warning(
+        "server-error (5xx) oracle poll failed — new_server_errors will not "
+        "be surfaced (agent-browser missing `network requests --status`?): %s",
+        err,
+    )
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -2388,11 +2406,14 @@ def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
             fresh = []
             for err in err_res.get("data", {}).get("errors", []):
                 msg = (err.get("text") or err.get("message") or "").strip()
-                if msg and msg not in seen:
-                    seen.add(msg)
+                if msg and msg not in seen and msg not in fresh:
                     fresh.append(msg)
             if fresh:
-                response["new_js_errors"] = fresh[:5]
+                # Mark only the SURFACED errors as seen — anything beyond the
+                # cap resurfaces on a later poll instead of being swallowed.
+                surfaced = fresh[:5]
+                seen.update(surfaced)
+                response["new_js_errors"] = surfaced
                 response["js_error_hint"] = (
                     "Uncaught JavaScript error(s) appeared after this action — "
                     "this is very often a real bug. Reproduce it and, if "
@@ -2417,7 +2438,7 @@ def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
         )
         if net_res.get("success"):
             seen = _seen_server_errors.setdefault(effective_task_id, set())
-            fresh = []
+            fresh = {}
             for req in net_res.get("data", {}).get("requests", []):
                 status = req.get("status")
                 # Client-side guard: only genuine 5xx (belt-and-suspenders in
@@ -2428,20 +2449,29 @@ def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
                 url = req.get("url") or ""
                 if not url:
                     continue
-                key = f"{status} {method} {url}".strip()
-                if key not in seen:
-                    seen.add(key)
-                    fresh.append(key)
+                # Dedupe on the URL WITHOUT query/fragment: a polling endpoint
+                # with a cache-buster (?t=...) is one fault, not a new signal
+                # per request. The surfaced text keeps the full URL as evidence.
+                dedupe_url = url.split("?", 1)[0].split("#", 1)[0]
+                key = f"{status} {method} {dedupe_url}".strip()
+                if key not in seen and key not in fresh:
+                    fresh[key] = f"{status} {method} {url}".strip()
             if fresh:
-                response["new_server_errors"] = fresh[:5]
+                # Mark only the SURFACED errors as seen — anything beyond the
+                # cap resurfaces on a later poll instead of being swallowed.
+                surfaced_keys = list(fresh)[:5]
+                seen.update(surfaced_keys)
+                response["new_server_errors"] = [fresh[k] for k in surfaced_keys]
                 response["server_error_hint"] = (
                     "The page triggered HTTP 5xx server error(s) during this "
                     "action — a real backend bug even if the UI showed nothing "
                     "or only a generic error. Record it, citing the exact "
                     "URL and status shown here."
                 )
+        else:
+            _warn_once_server_error_poll_failed(net_res.get("error"))
     except Exception as e:
-        logger.debug("post-action server-error surfacing failed: %s", e)
+        _warn_once_server_error_poll_failed(e)
 
 
 # ============================================================================
@@ -4063,6 +4093,17 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
+
+        # Drop per-session oracle state. The daemon's error/network logs die
+        # with the session, so a recreated session (e.g. after the inactivity
+        # reaper) starts with empty daemon logs; a stale `seen` set here would
+        # suppress a fault that recurs in the new session for the rest of the
+        # process. Also bounds memory in a long-lived gateway.
+        _seen_console_errors.pop(task_id, None)
+        _seen_server_errors.pop(task_id, None)
+        _last_snapshot_hash.pop(task_id, None)
+
+
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
