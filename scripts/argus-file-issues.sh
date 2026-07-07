@@ -223,7 +223,10 @@ FILING_START_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # best-effort and non-deterministic — it once re-filed a bug under a title
 # IDENTICAL to an existing issue. Never create an issue whose title (case/space
 # -normalised) already exists. Semantic near-dupes still rely on the agent.
-norm() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
+# Strip punctuation too, not just case/space: "Save button disabled." vs
+# "Save button disabled" (or ' vs ’, - vs —) are the same issue, and the
+# whole point of this net is catching a re-file that differs only trivially.
+norm() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9 ' | tr -s ' ' ' ' | sed 's/^ //; s/ $//'; }
 # The net covers OPEN issues and CLOSED-as-NOT_PLANNED only. CLOSED-COMPLETED
 # is deliberately excluded: the agent is instructed to FILE a regression of a
 # completed fix, and its natural title is the same factual title as the

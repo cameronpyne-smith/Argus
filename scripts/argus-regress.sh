@@ -40,6 +40,9 @@ WORK="/tmp/argus-regress"
 # Confine agent write_file/patch to the run dir (enforced in file_tools) —
 # regress sessions only ever write verdict.md there.
 export ARGUS_WRITE_ROOTS="/opt/data/run"
+# Bound a wedged local (Ollama) stream so one hung generation can't stall a
+# replay session for its whole timeout. See argus-test.sh for the rationale.
+export HERMES_STREAM_STALE_TIMEOUT="${HERMES_STREAM_STALE_TIMEOUT:-420}"
 
 # Mutual exclusion with argus-test / argus-file-issues (shared /opt/data/run,
 # --continue session, gh auth). See argus-test.sh for rationale.
@@ -185,7 +188,10 @@ for it in issues:
         f.write(f"# {title}\n\n(GitHub issue #{num})\n\n{clean}\n")
     m = re.search(r"[Vv]iewport[^\d]{0,24}(\d{2,4})\s*x\s*(\d{2,4})", body)
     vw, vh = (m.group(1), m.group(2)) if m else ("", "")
-    p = re.search(r"the ([a-z][a-z-]*) test persona", body, re.I) \
+    # argus-test now stamps a deterministic "Persona: <name>" line into every
+    # filed bug — trust that first, then fall back to prose patterns.
+    p = re.search(r"^Persona:\s*(\S+)", body, re.M) \
+        or re.search(r"the ([a-z][a-z-]*) test persona", body, re.I) \
         or re.search(r"persona '([^']+)'", body)
     persona = p.group(1).lower() if p else "candidate"
     with open(os.path.join(d, "meta"), "w") as f:
@@ -372,10 +378,17 @@ Your final message comes only after verdict.md is written."
   # Parse the verdict. Anything missing or malformed is posted as
   # unable-to-verify — a wedged replay must be visible on the issue, not
   # silently skipped (the comment trail doubles as the sweep's heartbeat).
+  # Collapse spaces/underscores to hyphens BEFORE stripping — otherwise
+  # "appears fixed" / "Still Reproduces" become "appearsfixed" /
+  # "stillreproduces", match no case, and a still-reproducing bug is
+  # mislabelled unable-to-verify (or, with --close, false-closed).
   VERDICT="$(sed -n 's/^VERDICT:[[:space:]]*//p' "$RUN_DIR/verdict.md" 2>/dev/null | head -1 \
-             | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z-')"
+             | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]_' '-' | tr -cd 'a-z-' \
+             | sed 's/^-*//; s/-*$//')"
   case "$VERDICT" in
-    still-reproduces|appears-fixed|unable-to-verify) ;;
+    still-reproduces*) VERDICT="still-reproduces" ;;
+    appears-fixed*)    VERDICT="appears-fixed" ;;
+    unable-to-verify*) VERDICT="unable-to-verify" ;;
     *) VERDICT="unable-to-verify" ;;
   esac
   OBSERVED="$(awk '/^OBSERVED:/{sub(/^OBSERVED:[[:space:]]*/,""); p=1} /^Screenshot:/{p=0} p' "$RUN_DIR/verdict.md" 2>/dev/null)"

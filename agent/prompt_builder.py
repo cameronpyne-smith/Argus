@@ -1197,11 +1197,19 @@ def build_skills_system_prompt(
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
-            "\n"
+            # Skill-maintenance guidance only applies when the session can
+            # actually mutate skills. QA runs use skills_ro (view only) and the
+            # image is ARGUS_SKILLS_READONLY — telling them to skill_manage
+            # just wastes a turn on an invalid call and contradicts the toolset.
+            + (
+                "If a skill has issues, fix it with skill_manage(action='patch').\n"
+                "After difficult/iterative tasks, offer to save as a skill. "
+                "If a skill you loaded was missing steps, had wrong commands, or needed "
+                "pitfalls you discovered, update it before finishing.\n"
+                if (available_tools is None or "skill_manage" in available_tools)
+                else ""
+            )
+            + "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"

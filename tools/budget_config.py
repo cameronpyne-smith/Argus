@@ -33,6 +33,10 @@ class BudgetConfig:
     turn_budget: int = DEFAULT_TURN_BUDGET_CHARS
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
     tool_overrides: Dict[str, int] = field(default_factory=dict)
+    # When scaled down for a small context window, per-tool registry thresholds
+    # (terminal/write_file/etc. register 100K) would otherwise outrank the
+    # scaled default and let one chatty result blow the window. Clamp them.
+    clamp_registry_to_default: bool = False
 
     def resolve_threshold(self, tool_name: str) -> int | float:
         """Resolve the persistence threshold for a tool.
@@ -44,7 +48,10 @@ class BudgetConfig:
         if tool_name in self.tool_overrides:
             return self.tool_overrides[tool_name]
         from tools.registry import registry
-        return registry.get_max_result_size(tool_name, default=self.default_result_size)
+        registry_value = registry.get_max_result_size(tool_name, default=self.default_result_size)
+        if self.clamp_registry_to_default:
+            return min(registry_value, self.default_result_size)
+        return registry_value
 
 
 # Default config -- matches current hardcoded behavior exactly.
@@ -73,4 +80,5 @@ def scale_for_context(context_length: int | None, base: BudgetConfig = DEFAULT_B
         turn_budget=turn,
         preview_size=base.preview_size,
         tool_overrides=base.tool_overrides,
+        clamp_registry_to_default=True,
     )
