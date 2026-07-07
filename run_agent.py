@@ -833,21 +833,13 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     fixed = raw_stripped
     # 1. Strip trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    # 1.5 Close an unterminated string — the usual shape when the output
-    # token cap cuts a long write_file/browser_type mid-value. Walk with
-    # escape tracking; if the text ends inside a string, terminate it so
-    # the structure-closing pass below can finish the repair.
-    in_str = False
-    esc = False
-    for ch in fixed:
-        if esc:
-            esc = False
-        elif ch == '\\':
-            esc = True
-        elif ch == '"':
-            in_str = not in_str
-    if in_str:
-        fixed = fixed.rstrip('\\') + '"'
+    # NB: deliberately do NOT auto-close an unterminated string. An open
+    # string is the signature of OUTPUT-CAP TRUNCATION (a long write_file /
+    # browser_type value cut mid-stream), and silently closing it would run
+    # the tool with partial content while defeating the truncation detector
+    # that should instead surface it to the model ("shorten / write in
+    # chunks"). Truncated args fall through to "{}" and are handled by the
+    # length/truncation path in the agent loop, not repaired here.
     # 2. Close unclosed structures
     open_curly = fixed.count('{') - fixed.count('}')
     open_bracket = fixed.count('[') - fixed.count(']')

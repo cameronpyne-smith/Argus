@@ -182,16 +182,30 @@ class TestDeduplicateToolCalls:
         out = AIAgent._deduplicate_tool_calls(tcs)
         assert len(out) == 1
 
-    def test_multiple_duplicates(self):
+    def test_multiple_idempotent_duplicates(self):
+        # Only idempotent/read-only duplicates collapse; identical mutating
+        # calls (terminal) are deliberate and preserved.
         tcs = [
             make_tc("web_search", '{"q":"a"}'),
             make_tc("web_search", '{"q":"a"}'),
-            make_tc("terminal", '{"cmd":"ls"}'),
-            make_tc("terminal", '{"cmd":"ls"}'),
-            make_tc("terminal", '{"cmd":"pwd"}'),
+            make_tc("read_file", '{"path":"x"}'),
+            make_tc("read_file", '{"path":"x"}'),
+            make_tc("read_file", '{"path":"y"}'),
         ]
         out = AIAgent._deduplicate_tool_calls(tcs)
         assert len(out) == 3
+
+    def test_mutating_duplicates_preserved(self):
+        # Clicking Save twice / running the same command twice can be an
+        # intentional double-submit probe — never silently collapsed.
+        tcs = [
+            make_tc("terminal", '{"cmd":"ls"}'),
+            make_tc("terminal", '{"cmd":"ls"}'),
+            make_tc("browser_click", '{"ref":"e5"}'),
+            make_tc("browser_click", '{"ref":"e5"}'),
+        ]
+        out = AIAgent._deduplicate_tool_calls(tcs)
+        assert len(out) == 4
 
     def test_same_tool_different_args_kept(self):
         tcs = [
@@ -221,8 +235,9 @@ class TestDeduplicateToolCalls:
         assert AIAgent._deduplicate_tool_calls([]) == []
 
     def test_first_occurrence_kept(self):
-        tc1 = make_tc("terminal", '{"cmd":"ls"}')
-        tc2 = make_tc("terminal", '{"cmd":"ls"}')
+        # Idempotent tool: first occurrence kept, duplicate dropped.
+        tc1 = make_tc("web_search", '{"q":"ls"}')
+        tc2 = make_tc("web_search", '{"q":"ls"}')
         out = AIAgent._deduplicate_tool_calls([tc1, tc2])
         assert len(out) == 1
         assert out[0] is tc1
