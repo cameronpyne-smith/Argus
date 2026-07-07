@@ -833,6 +833,21 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     fixed = raw_stripped
     # 1. Strip trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    # 1.5 Close an unterminated string — the usual shape when the output
+    # token cap cuts a long write_file/browser_type mid-value. Walk with
+    # escape tracking; if the text ends inside a string, terminate it so
+    # the structure-closing pass below can finish the repair.
+    in_str = False
+    esc = False
+    for ch in fixed:
+        if esc:
+            esc = False
+        elif ch == '\\':
+            esc = True
+        elif ch == '"':
+            in_str = not in_str
+    if in_str:
+        fixed = fixed.rstrip('\\') + '"'
     # 2. Close unclosed structures
     open_curly = fixed.count('{') - fixed.count('}')
     open_bracket = fixed.count('[') - fixed.count(']')
@@ -6621,21 +6636,47 @@ class AIAgent:
         return truncated
 
     @staticmethod
+    def _normalize_empty_tool_call_ids(self, tool_calls: list) -> None:
+        """Assign a deterministic id to any tool_call the provider left id-less.
+
+        Some Ollama builds stream tool calls with an empty id. Mutating the
+        id in place here means _build_assistant_message (which sees a
+        non-empty raw id and uses it verbatim) and tool execution (which
+        reads tool_call.id) agree, so the tool result links correctly.
+        """
+        if not tool_calls:
+            return
+        for idx, tc in enumerate(tool_calls):
+            try:
+                raw_id = getattr(tc, "id", None)
+                if isinstance(raw_id, str) and raw_id.strip():
+                    continue
+                fn = getattr(tc, "function", None)
+                fn_name = getattr(fn, "name", "") if fn else ""
+                fn_args = getattr(fn, "arguments", "{}") if fn else "{}"
+                tc.id = self._deterministic_call_id(fn_name, fn_args, idx)
+            except Exception as e:
+                logger.debug("tool-call id normalization skipped: %s", e)
+
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 
-        Only the first occurrence of each unique pair is kept.
+        Only read-only/idempotent tools are deduplicated — an identical
+        mutating call repeated in one turn can be deliberate (clicking Save
+        twice to probe double-submit handling), and silently collapsing it
+        makes the model believe the second action happened when it never ran.
         Returns the original list if no duplicates were found.
         """
+        from agent.tool_guardrails import IDEMPOTENT_TOOL_NAMES
         seen: set = set()
         unique: list = []
         for tc in tool_calls:
             key = (tc.function.name, tc.function.arguments)
-            if key not in seen:
-                seen.add(key)
-                unique.append(tc)
-            else:
+            if key in seen and tc.function.name in IDEMPOTENT_TOOL_NAMES:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
+                continue
+            seen.add(key)
+            unique.append(tc)
         return unique if len(unique) < len(tool_calls) else tool_calls
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
@@ -8989,11 +9030,21 @@ class AIAgent:
                     _name_str = ", ".join(_partial_names[:3])
                     if len(_partial_names) > 3:
                         _name_str += f", +{len(_partial_names) - 3} more"
-                    _warn = (
-                        f"\n\n⚠ Stream stalled mid tool-call "
-                        f"({_name_str}); the action was not executed. "
-                        f"Ask me to retry if you want to continue."
-                    )
+                    if self.quiet_mode:
+                        # Autonomous run (e.g. Argus QA): no user is present to
+                        # ask for a retry. Make the stub a directive the model
+                        # acts on when the loop next runs it.
+                        _warn = (
+                            f"\n\n⚠ Stream stalled mid tool-call "
+                            f"({_name_str}); the action was NOT executed. "
+                            f"Re-issue that tool call now and continue."
+                        )
+                    else:
+                        _warn = (
+                            f"\n\n⚠ Stream stalled mid tool-call "
+                            f"({_name_str}); the action was not executed. "
+                            f"Ask me to retry if you want to continue."
+                        )
                     _partial_text = (_partial_text or "") + _warn
                     # Also fire as a streaming delta so the user sees it now
                     # instead of only in the persisted transcript.
@@ -11127,11 +11178,19 @@ class AIAgent:
             elif function_name == "skill_manage":
                 self._iters_since_skill = 0
 
+            _args_shape_error = None
             try:
                 function_args = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError:
                 function_args = {}
             if not isinstance(function_args, dict):
+                _got_type = type(function_args).__name__
+                _args_shape_error = (
+                    f"Tool arguments must be a JSON object like "
+                    f'{{"param": "value"}}, but you sent a {_got_type}. '
+                    f"Re-issue {function_name} with its parameters wrapped in "
+                    f"an object (use {{}} if it takes none)."
+                )
                 function_args = {}
 
             # Checkpoint for file-mutating tools
@@ -11158,11 +11217,13 @@ class AIAgent:
 
             block_result = None
             blocked_by_guardrail = False
+            block_message = _args_shape_error
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
-                )
+                if block_message is None:
+                    from hermes_cli.plugins import get_pre_tool_call_block_message
+                    block_message = get_pre_tool_call_block_message(
+                        function_name, function_args, task_id=effective_task_id or "",
+                    )
             except Exception:
                 block_message = None
 
@@ -11531,21 +11592,35 @@ class AIAgent:
 
             function_name = tool_call.function.name
 
+            _args_shape_error: Optional[str] = None
             try:
                 function_args = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError as e:
                 logging.warning(f"Unexpected JSON error after validation: {e}")
                 function_args = {}
             if not isinstance(function_args, dict):
+                # Valid JSON but the wrong envelope (a bare string or array).
+                # Coercing to {} runs the tool argument-less and returns a
+                # misleading "missing parameter" error — a small model then
+                # retries the same broken shape. Name the actual problem
+                # instead so it can wrap the parameters correctly.
+                _got_type = type(function_args).__name__
+                _args_shape_error = (
+                    f"Tool arguments must be a JSON object like "
+                    f'{{"param": "value"}}, but you sent a {_got_type}. '
+                    f"Re-issue {function_name} with its parameters wrapped in "
+                    f"an object (use {{}} if it takes none)."
+                )
                 function_args = {}
 
             # Check plugin hooks for a block directive before executing.
-            _block_msg: Optional[str] = None
+            _block_msg: Optional[str] = _args_shape_error
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                _block_msg = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
-                )
+                if _block_msg is None:
+                    from hermes_cli.plugins import get_pre_tool_call_block_message
+                    _block_msg = get_pre_tool_call_block_message(
+                        function_name, function_args, task_id=effective_task_id or "",
+                    )
             except Exception:
                 pass
 
@@ -12113,8 +12188,7 @@ class AIAgent:
                     final_response = (_summary_result.content or "").strip()
 
             if final_response:
-                if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                final_response = self._strip_think_blocks(final_response).strip()
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
@@ -12156,8 +12230,7 @@ class AIAgent:
                     final_response = (_retry_result.content or "").strip()
 
                 if final_response:
-                    if "<think>" in final_response:
-                        final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                    final_response = self._strip_think_blocks(final_response).strip()
                     if final_response:
                         messages.append({"role": "assistant", "content": final_response})
                     else:
@@ -13522,6 +13595,43 @@ class AIAgent:
                                     # Don't append the broken response to messages;
                                     # just re-run the same API call from the current
                                     # message state, giving the model another chance.
+                                    continue
+                                if truncated_tool_call_retries < 3:
+                                    # A blind re-run reproduced the same overlong
+                                    # call. Tell the model WHY (an unguided retry
+                                    # just repeats the doomed call and burns the
+                                    # session) so it can shorten the content or
+                                    # write in chunks. Append the partial text +
+                                    # a synthetic nudge and continue rather than
+                                    # ending the run — critical for autonomous QA
+                                    # where no user is present to retry.
+                                    truncated_tool_call_retries += 1
+                                    self._vprint(
+                                        f"{self.log_prefix}⚠️  Truncated tool call again — nudging model to shorten "
+                                        f"({truncated_tool_call_retries}/3)...",
+                                        force=True,
+                                    )
+                                    _partial_text = self._strip_think_blocks(
+                                        _trunc_content or ""
+                                    ).strip()
+                                    if _partial_text:
+                                        messages.append({
+                                            "role": "assistant",
+                                            "content": _partial_text,
+                                        })
+                                    messages.append({
+                                        "role": "user",
+                                        "content": (
+                                            "[System: Your last tool call was cut off by the output "
+                                            "length limit before its arguments finished — it was NOT "
+                                            "executed, and re-issuing it unchanged will fail the same "
+                                            "way. Make the call smaller: shorten the content, or for a "
+                                            "large file write it in several append steps. Then issue "
+                                            "the tool call again.]"
+                                        ),
+                                    })
+                                    self._session_messages = messages
+                                    self._save_session_log(messages)
                                     continue
                                 self._vprint(
                                     f"{self.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
@@ -15249,7 +15359,15 @@ class AIAgent:
                         tool_name, error_msg = invalid_json_args[0]
                         self._vprint(f"{self.log_prefix}⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
 
-                        if self._invalid_json_retries < 3:
+                        # A blind re-run helps a cloud/router flake, but a local
+                        # model reliably reproduces its own formatting quirk —
+                        # three silent retries just burn iterations. Skip
+                        # straight to the recovery-message injection for local
+                        # endpoints so the model actually learns what to fix.
+                        _local_json_fast_recover = bool(
+                            self.base_url and is_local_endpoint(self.base_url)
+                        )
+                        if self._invalid_json_retries < 3 and not _local_json_fast_recover:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._invalid_json_retries}/3)...")
                             # Don't add anything to messages, just retry the API call
                             continue
@@ -15293,6 +15411,14 @@ class AIAgent:
                     assistant_message.tool_calls = self._deduplicate_tool_calls(
                         assistant_message.tool_calls
                     )
+                    # Stamp a deterministic id onto any tool_call the provider
+                    # left id-less BEFORE building the message or executing.
+                    # Otherwise _build_assistant_message repairs the id on the
+                    # assistant side while execution appends the tool result
+                    # under the raw "" — the mismatch makes _repair_message_
+                    # sequence drop the result, so a mutating action runs but
+                    # its output vanishes and the model redoes it.
+                    self._normalize_empty_tool_call_ids(assistant_message.tool_calls)
 
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
