@@ -6635,7 +6635,6 @@ class AIAgent:
         )
         return truncated
 
-    @staticmethod
     def _normalize_empty_tool_call_ids(self, tool_calls: list) -> None:
         """Assign a deterministic id to any tool_call the provider left id-less.
 
@@ -6658,6 +6657,7 @@ class AIAgent:
             except Exception as e:
                 logger.debug("tool-call id normalization skipped: %s", e)
 
+    @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 
