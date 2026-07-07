@@ -50,6 +50,7 @@ Usage:
 """
 
 import atexit
+import difflib
 import functools
 import hashlib
 import json
@@ -1061,6 +1062,17 @@ _LOCAL_SUFFIX = "::local"
 # change (identical snapshot before and after). Cleared on navigate so a
 # post-nav click never compares against the previous page.
 _last_snapshot_hash: Dict[str, str] = {}
+
+# Full (unfiltered) accessibility-tree text of the most recent observation per
+# session key. The compact "-i -c" view the model receives drops ALL static
+# text (verified live: paragraphs, role=alert toasts and bare StaticText nodes
+# are absent from compact snapshots), so change detection and the on-page
+# error oracle must read the plain tree or they are blind to exactly the
+# content bugs render as.
+_last_plain_snapshot: Dict[str, str] = {}
+_PLAIN_SNAPSHOT_MAX_STORE = 200_000
+_CONTENT_CHANGE_MAX_LINES = 20
+_CONTENT_CHANGE_LINE_MAX_CHARS = 200
 
 # Session keys whose browser viewport has already been sized — the set call
 # costs a CLI spawn per navigation otherwise. Popped on session cleanup so a
@@ -2357,6 +2369,39 @@ _UI_ERROR_MAX_SURFACED = 3
 _UI_ERROR_LINE_MAX_CHARS = 200
 
 
+def _take_plain_snapshot(effective_task_id: str) -> Optional[str]:
+    try:
+        snap = _run_browser_command(effective_task_id, "snapshot", [], timeout=15)
+    except Exception as e:
+        logger.debug("plain snapshot failed: %s", e)
+        return None
+    if not snap.get("success"):
+        return None
+    return snap.get("data", {}).get("snapshot", "") or ""
+
+
+def _remember_plain_snapshot(effective_task_id: str, plain_text: Optional[str]) -> None:
+    if plain_text is not None:
+        _last_plain_snapshot[effective_task_id] = plain_text[:_PLAIN_SNAPSHOT_MAX_STORE]
+
+
+def _snapshot_changed_lines(prev: str, new: str) -> List[str]:
+    changed: List[str] = []
+    try:
+        for line in difflib.unified_diff(
+            prev.split("\n"), new.split("\n"), n=0, lineterm=""
+        ):
+            if line.startswith(("---", "+++", "@@")):
+                continue
+            changed.append(line[:_CONTENT_CHANGE_LINE_MAX_CHARS])
+            if len(changed) >= _CONTENT_CHANGE_MAX_LINES:
+                changed.append("[... more changed lines omitted]")
+                break
+    except Exception as e:
+        logger.debug("snapshot diff failed: %s", e)
+    return changed
+
+
 def _attach_ui_error_signal(
     effective_task_id: str, response: dict, snapshot_text: str
 ) -> None:
@@ -2374,14 +2419,24 @@ def _attach_ui_error_signal(
         seen = _seen_ui_errors.setdefault(effective_task_id, set())
         fresh: list = []
         fresh_norms: set = set()
+        # In plain (unfiltered) trees an alert's text sits on child lines
+        # nested BELOW the "- alert" role line, so the role-scoped error-word
+        # tier must extend to the alert's indented subtree.
+        alert_indent: Optional[int] = None
         for raw_line in snapshot_text.split("\n"):
             line = raw_line.strip()
             if not line:
                 continue
+            indent = len(raw_line) - len(raw_line.lstrip())
+            if alert_indent is not None and indent <= alert_indent:
+                alert_indent = None
             is_alert_role = bool(_UI_ALERT_ROLE_RE.match(line))
+            if is_alert_role and alert_indent is None:
+                alert_indent = indent
+            in_alert = is_alert_role or alert_indent is not None
             if not (
                 _UI_ERROR_PHRASE_RE.search(line)
-                or (is_alert_role and _UI_ALERT_ERROR_WORD_RE.search(line))
+                or (in_alert and _UI_ALERT_ERROR_WORD_RE.search(line))
             ):
                 continue
             norm = _UI_ERROR_REF_RE.sub("", line).lower()
@@ -2430,6 +2485,9 @@ def _attach_post_action_snapshot(
 
     Best-effort: never raises and never flips a successful action to failed.
     """
+    plain_text = _take_plain_snapshot(effective_task_id)
+    if plain_text is not None:
+        plain_text = plain_text[:_PLAIN_SNAPSHOT_MAX_STORE]
     try:
         snap = _run_browser_command(
             effective_task_id, "snapshot", ["-i", "-c"], timeout=15
@@ -2438,9 +2496,15 @@ def _attach_post_action_snapshot(
         logger.debug("post-action snapshot failed: %s", e)
         # The action that broke the page is exactly the one whose snapshot
         # fails — still surface the JS/5xx errors it produced.
+        if plain_text:
+            _attach_ui_error_signal(effective_task_id, response, plain_text)
+            _remember_plain_snapshot(effective_task_id, plain_text)
         _attach_new_error_signals(effective_task_id, response)
         return
     if not snap.get("success"):
+        if plain_text:
+            _attach_ui_error_signal(effective_task_id, response, plain_text)
+            _remember_plain_snapshot(effective_task_id, plain_text)
         _attach_new_error_signals(effective_task_id, response)
         return
     data = snap.get("data", {})
@@ -2451,21 +2515,74 @@ def _attach_post_action_snapshot(
         snapshot_text.encode("utf-8", errors="replace")
     ).hexdigest()
     prev_hash = _last_snapshot_hash.get(effective_task_id)
-    if detect_no_change and prev_hash is not None and new_hash == prev_hash:
-        response["no_visible_change"] = True
-        response["note"] = (
-            "The page snapshot is identical before and after this action — it "
-            "produced no visible change. The element may be disabled, "
-            "purely decorative, or the ref stale. Do not repeat the same "
-            "action; take a fresh browser_snapshot and try a different element "
-            "or approach. This is likely a tool/interaction issue, not a site "
-            "bug — do not report it unless the control is clearly meant to act."
-        )
-    _last_snapshot_hash[effective_task_id] = new_hash
+    prev_plain = _last_plain_snapshot.get(effective_task_id)
 
-    # Scan the FULL snapshot for client-rendered error signatures before
-    # truncation can drop them.
-    _attach_ui_error_signal(effective_task_id, response, snapshot_text)
+    def _is_unchanged() -> Tuple[bool, bool]:
+        compact_same = prev_hash is not None and new_hash == prev_hash
+        plain_same = (
+            plain_text is not None
+            and prev_plain is not None
+            and plain_text == prev_plain
+        )
+        return compact_same, plain_same
+
+    compact_unchanged, plain_unchanged = _is_unchanged()
+    if detect_no_change and compact_unchanged and (
+        plain_text is None or prev_plain is None or plain_unchanged
+    ):
+        # SPA responses routinely land 300-1500ms after the action returns —
+        # re-observe once after a settle wait before declaring a no-op, or a
+        # working submit reads as a dead control.
+        time.sleep(1.0)
+        retry_plain = _take_plain_snapshot(effective_task_id)
+        if retry_plain is not None:
+            plain_text = retry_plain[:_PLAIN_SNAPSHOT_MAX_STORE]
+        try:
+            retry_snap = _run_browser_command(
+                effective_task_id, "snapshot", ["-i", "-c"], timeout=15
+            )
+        except Exception:
+            retry_snap = None
+        if retry_snap and retry_snap.get("success"):
+            data = retry_snap.get("data", {})
+            snapshot_text = data.get("snapshot", "")
+            refs = data.get("refs", {})
+            new_hash = hashlib.md5(
+                snapshot_text.encode("utf-8", errors="replace")
+            ).hexdigest()
+            snap = retry_snap
+        compact_unchanged, plain_unchanged = _is_unchanged()
+
+    if detect_no_change and compact_unchanged:
+        if plain_text is None or prev_plain is None or plain_unchanged:
+            response["no_visible_change"] = True
+            response["note"] = (
+                "The page snapshot is identical before and after this action "
+                "(re-checked after a 1s settle wait) — it produced no visible "
+                "change. The element may be disabled, purely decorative, or "
+                "the ref stale. Do not repeat the same action; take a fresh "
+                "browser_snapshot and try a different element or approach. "
+                "This is likely a tool/interaction issue, not a site bug — do "
+                "not report it unless the control is clearly meant to act."
+            )
+        else:
+            changed = _snapshot_changed_lines(prev_plain, plain_text)
+            if changed:
+                response["content_changes"] = changed
+                response["content_change_hint"] = (
+                    "No interactive element changed, but the page TEXT did — "
+                    "the lines above are the exact diff (-removed/+added). "
+                    "Read them before judging the action's outcome: success "
+                    "and failure messages usually appear only here."
+                )
+    _last_snapshot_hash[effective_task_id] = new_hash
+    _remember_plain_snapshot(effective_task_id, plain_text)
+
+    # Scan the plain (unfiltered) tree for client-rendered error signatures —
+    # the compact view drops static text, which is where error toasts live.
+    _attach_ui_error_signal(
+        effective_task_id, response, plain_text if plain_text else snapshot_text
+    )
 
     if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
         snapshot_text = _truncate_snapshot(snapshot_text)
@@ -2773,6 +2890,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # after this navigation never falsely reports "no visible change" against
     # the previous page's state.
     _last_snapshot_hash.pop(nav_session_key, None)
+    _last_plain_snapshot.pop(nav_session_key, None)
 
     if result.get("success"):
         data = result.get("data", {})
@@ -2850,14 +2968,21 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             response["stealth_features"] = active_features
 
         # Auto-take a compact snapshot so the model can act immediately
-        # without a separate browser_snapshot call.
+        # without a separate browser_snapshot call. The error scan reads the
+        # plain tree — compact drops the static text errors render as.
+        nav_plain = _take_plain_snapshot(nav_session_key)
+        if nav_plain is not None:
+            nav_plain = nav_plain[:_PLAIN_SNAPSHOT_MAX_STORE]
+            _remember_plain_snapshot(nav_session_key, nav_plain)
+            _attach_ui_error_signal(nav_session_key, response, nav_plain)
         try:
             snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
             if snap_result.get("success"):
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
-                _attach_ui_error_signal(nav_session_key, response, snapshot_text)
+                if nav_plain is None:
+                    _attach_ui_error_signal(nav_session_key, response, snapshot_text)
                 if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
                     snapshot_text = _truncate_snapshot(snapshot_text)
                 response["snapshot"] = snapshot_text
@@ -2943,6 +3068,19 @@ def browser_snapshot(
                 snapshot_text.encode("utf-8", errors="replace")
             ).hexdigest()
 
+        # The error scan needs the plain tree: a full snapshot already is one;
+        # a compact one drops the static text errors render as, so take a
+        # plain companion for the scan and the text-change baseline.
+        if full:
+            _scan_text = snapshot_text
+            _remember_plain_snapshot(effective_task_id, snapshot_text)
+        else:
+            _plain = _take_plain_snapshot(effective_task_id)
+            if _plain is not None:
+                _plain = _plain[:_PLAIN_SNAPSHOT_MAX_STORE]
+                _remember_plain_snapshot(effective_task_id, _plain)
+            _scan_text = _plain if _plain else snapshot_text
+
         _pre_truncation_text = snapshot_text
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
@@ -2955,7 +3093,7 @@ def browser_snapshot(
             "snapshot": snapshot_text,
             "element_count": len(refs) if refs else 0
         }
-        _attach_ui_error_signal(effective_task_id, response, _pre_truncation_text)
+        _attach_ui_error_signal(effective_task_id, response, _scan_text)
         _copy_fallback_warning(response, result)
 
         # Merge supervisor state (pending dialogs + frame tree) when a CDP
@@ -3192,6 +3330,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
         }
         _copy_fallback_warning(response, result)
         _last_snapshot_hash.pop(effective_task_id, None)
+        _last_plain_snapshot.pop(effective_task_id, None)
         _attach_post_action_snapshot(effective_task_id, response)
         return json.dumps(response, ensure_ascii=False)
     else:
@@ -3610,6 +3749,9 @@ def browser_fill_form(fields, submit_ref: Optional[str] = None, task_id: Optiona
                         pre_submit.get("data", {}).get("snapshot", "")
                         .encode("utf-8", errors="replace")
                     ).hexdigest()
+                _remember_plain_snapshot(
+                    effective_task_id, _take_plain_snapshot(effective_task_id)
+                )
             except Exception:
                 pass
             sres = _run_browser_command(effective_task_id, "click", [sref])
@@ -4402,6 +4544,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         _seen_server_errors.pop(task_id, None)
         _seen_ui_errors.pop(task_id, None)
         _last_snapshot_hash.pop(task_id, None)
+        _last_plain_snapshot.pop(task_id, None)
         _viewport_applied.pop(task_id, None)
 
 
