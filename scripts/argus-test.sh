@@ -73,6 +73,15 @@ RUN_DIR="/opt/data/run"
 # skill, the pin sidecar, config.yaml, or the qa-notes ledger.
 export ARGUS_WRITE_ROOTS="/opt/data/run:/opt/data/reports"
 
+# Bound how long a wedged local (Ollama) stream can stall a session. The
+# agent disables its stale-stream detector for local endpoints by default
+# (prefill on a large context can legitimately take minutes), but a VRAM
+# thrash / hung generation with the socket still open would otherwise burn
+# the whole SESSION_TIMEOUT with zero progress and waste a nudge slot. A
+# finite ceiling covers 64K prefill on gemma4 with headroom and lets the
+# stream-retry logic recover. Override by exporting it before the run.
+export HERMES_STREAM_STALE_TIMEOUT="${HERMES_STREAM_STALE_TIMEOUT:-420}"
+
 # Mutual exclusion across argus-test / argus-regress / argus-file-issues:
 # they share /opt/data/run, the global --continue session, and the gh auth in
 # the same HOME — an overlapping regress sweep once could rm -rf a live QA
@@ -345,7 +354,7 @@ if [[ ! -f "$INDEX" ]]; then
   {
     echo "# ${SITE} coverage index — maintained by argus-test. Agents must not edit this file."
     echo "# Format: area | start-url | persona | last-tested   (last-tested: YYYY-MM-DD or 'never')"
-    echo "dashboard | https://${SITE_HOST}/dashboard | default | never"
+    echo "dashboard | https://${SITE_HOST}/dashboard | ${PERSONA} | never"
   } > "$INDEX"
 fi
 
@@ -456,6 +465,11 @@ elif [[ -f "$SITE_DIR/$AREA.md" ]]; then
 else
   printf '# %s\n\nNo notes on this area yet — first visit. Explore and record what you find.\n' "$AREA" > "$RUN_DIR/area.md"
 fi
+# Fingerprint the copied-in notes so we can tell after the run whether the
+# model actually advanced the "what remains untested" frontier or left the
+# file byte-identical (a known gemma habit on 0-bug runs — the ledger then
+# looks tested while the frontier never moves).
+AREA_MD_SUM_IN="$(md5sum "$RUN_DIR/area.md" 2>/dev/null | cut -d' ' -f1)"
 
 # ── Known-issues frontier feed ─────────────────────────────────────────────
 # Per-area, harness-owned list of bugs ALREADY found+verified+filed (populated
@@ -471,7 +485,7 @@ KNOWN_NUDGE_LINE=""
 if [[ "$DISCOVER" != "true" && "$GUIDE_MODE" != "only" && -s "$SITE_DIR/$AREA.known.md" ]]; then
   cp "$SITE_DIR/$AREA.known.md" "$RUN_DIR/known-issues.md"
   KNOWN_BLOCK="
-ALREADY-FILED BUGS FOR THIS AREA — read /opt/data/run/known-issues.md early with read_file. Every line is a bug that was already found, independently verified, and filed on a previous run. Do NOT re-report, re-record, or re-verify any of them — they are already tracked. If you stumble back onto one, that is expected: note it in one line and move on. Your value THIS run is NEW ground — steer your testing and your own hypotheses toward angles these known bugs did NOT cover (untested features, different state, different sequences). Re-confirming an already-filed bug adds nothing; finding a genuinely new one is the whole point.
+ALREADY-CONFIRMED BUGS FOR THIS AREA — read /opt/data/run/known-issues.md early with read_file. Every line is a bug that was already found and independently confirmed on a previous run. Do NOT re-report or re-record any of them as new findings. If you stumble back onto one, that is expected: note it in one line and move on. Your value THIS run is NEW ground — steer your testing and your own hypotheses toward angles these known bugs did NOT cover (untested features, different state, different sequences). Re-confirming an already-known bug adds nothing; finding a genuinely new one is the whole point.
 "
   KNOWN_NUDGE_LINE=" Remember: /opt/data/run/known-issues.md lists bugs ALREADY filed for this area — do not re-record those; put your remaining effort into NEW, untested surface."
 fi
@@ -724,13 +738,13 @@ if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
     [[ -f "$b" ]] || continue
     url="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
     nurl="$(norm_url "$url")"
-    # Only trust a numeric code as an HTTP-error symptom when the bug text is
-    # actually about an error — otherwise a "£500" amount field would collide
-    # with a genuine HTTP 500 on the same page and be wrongly merged.
-    code=""
-    if grep -qiE 'error|oops|internal server|dynamically imported|stack trace|http [0-9]|status code|crash|blank' "$b" 2>/dev/null; then
-      code="$(grep -hoE '\b(403|404|500|502|503)\b' "$b" 2>/dev/null | head -1)"
-    fi
+    # Only trust a numeric code as an HTTP-error symptom when it appears ON a
+    # line that itself carries error context — extracting from the whole file
+    # made "£500" / "500 characters" / "500ms" read as HTTP 500, and since
+    # almost every bug file contains the word "error" somewhere, the old
+    # file-wide gate was effectively always open. Scope both to the same line.
+    code="$(grep -iE 'error|oops|internal server|dynamically imported|stack trace|http [0-9]|status code|crash|blank' "$b" 2>/dev/null \
+            | grep -hoE '\b(403|404|500|502|503)\b' 2>/dev/null | head -1)"
     tkey="$(head -1 "$b" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
     if [[ -n "$code" ]]; then
       key="${nurl}##${code}"
@@ -738,7 +752,20 @@ if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
       key="${nurl}##${tkey}"
     fi
     canon="${DEDUP_CANON[$key]:-}"
-    if [[ -n "$canon" && -f "$canon" ]]; then
+    # When merging on a shared error code (not an identical title), require the
+    # two titles to share at least one 4+ char word — otherwise two distinct
+    # 500s on the same path (e.g. "edit page 500" vs "delete confirm 500")
+    # would collapse and the loser would skip verification and filing.
+    share_token=1
+    if [[ -n "$canon" && -f "$canon" && -n "$code" ]]; then
+      share_token=0
+      ctitle_words="$(head -1 "$canon" | tr 'A-Z' 'a-z' | grep -oE '[a-z]{4,}' | sort -u)"
+      btitle_words="$(head -1 "$b" | tr 'A-Z' 'a-z' | grep -oE '[a-z]{4,}' | sort -u)"
+      if [[ -n "$ctitle_words" ]] && comm -12 <(printf '%s\n' "$ctitle_words") <(printf '%s\n' "$btitle_words") | grep -q .; then
+        share_token=1
+      fi
+    fi
+    if [[ -n "$canon" && -f "$canon" && $share_token -eq 1 ]]; then
       dtitle="$(head -1 "$b" | sed 's/^#*[[:space:]]*//')"
       printf '\nAlso recorded this run as a duplicate (merged): %s — %s\n' "$dtitle" "${url:-?}" >> "$canon"
       mv "$b" "$RUN_DIR/duplicates/$(basename "$b")" 2>/dev/null || true
@@ -761,6 +788,39 @@ fi
 # produced the bug. Verdicts: confirmed (keep), downgrade (keep, lower
 # severity), reject (moved to rejected/, excluded from report + filing). Each
 # surviving bug gets a 'Verification:' provenance line. Disable with --no-verify.
+# Pre-verify scope filter: a bug whose URL sits under a DIFFERENT known area
+# of this persona is persona/area drift (the candidate run that wandered into
+# owner-org pages). The verifier for THIS run can't reach it — it just gets
+# redirected to login and (correctly) rejects — so verifying it wastes a whole
+# session of the budget that legitimate bugs then lose. Move such bugs aside
+# BEFORE the verify loop: recorded, excluded from this area's verify/feed, and
+# noted so a run on the owning area can pick them up.
+if [[ "$DISCOVER" != "true" && -n "$AREA_URL" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+  AREA_PATH_SCOPE="${AREA_URL#https://${SITE_HOST}}"
+  if [[ -n "$AREA_PATH_SCOPE" && "$AREA_PATH_SCOPE" != "/" ]]; then
+    mkdir -p "$RUN_DIR/out-of-scope"
+    OOS=0
+    for b in "$RUN_DIR"/bug-*.md; do
+      [[ -f "$b" ]] || continue
+      bu="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+      [[ -n "$bu" ]] || continue
+      [[ "$bu" == "https://${SITE_HOST}${AREA_PATH_SCOPE}"* ]] && continue
+      if awk -F'|' -v u="$bu" -v p="$PERSONA" -v me="$AREA" -v host="https://${SITE_HOST}" '
+           /^#/ {next}
+           { for (i=1;i<=3;i++) gsub(/^[ \t]+|[ \t]+$/, "", $i) }
+           $3==p && $1!=me && $2!=host"/dashboard" && index(u, $2)==1 { found=1 }
+           END { exit !found }' "$INDEX"; then
+        printf '\nVerification: out-of-scope — URL belongs to another area, not %s; not verified from this persona/area run.\n' "$AREA" >> "$b"
+        mv "$b" "$RUN_DIR/out-of-scope/$(basename "$b")" 2>/dev/null || true
+        OOS=$((OOS + 1))
+      fi
+    done
+    if [[ $OOS -gt 0 ]]; then
+      echo "▶ Scope filter: set aside ${OOS} out-of-area bug(s) before verify (archived in out-of-scope/, excluded from this area's report/feed)."
+    fi
+  fi
+fi
+
 if [[ "$VERIFY" == "true" && "$DISCOVER" != "true" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
   echo ""
   echo "▶ Verification pass (${VERIFY_PROVIDER}/${VERIFY_MODEL}): independently re-checking each recorded bug in a fresh session..."
@@ -847,7 +907,7 @@ Write that file, then stop. Do not record new bugs and do not test anything beyo
         mv "$b" "$RUN_DIR/rejected/$(basename "$b")" 2>/dev/null || true
         ;;
       downgrade*)
-        newsev="$(grep -iE '^SEVERITY:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -cd 'A-Za-z')"
+        newsev="$(grep -iE '^SEVERITY:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | grep -oiE '^(Critical|High|Medium|Low)' | head -1)"
         if [[ -n "$newsev" ]]; then
           oldsev="$(grep -iE '^Severity:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
           sed -i "s/^[Ss][Ee][Vv][Ee][Rr][Ii][Tt][Yy]:.*/Severity: ${newsev}/" "$b"
@@ -885,23 +945,43 @@ fi
 if [[ "$DISCOVER" != "true" && "$GUIDE_MODE" != "only" && -z "$VIEWPORT" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
   KNOWN_FILE="$SITE_DIR/$AREA.known.md"
   if [[ ! -f "$KNOWN_FILE" ]]; then
-    printf '# %s — bugs already found, verified and filed (harness-owned). QA runs read this to avoid re-reporting them; do not hand-edit.\n' "$AREA" > "$KNOWN_FILE"
+    printf '# %s — bugs already found and independently CONFIRMED on a previous run (harness-owned). QA runs read this to avoid re-reporting them as new; do not hand-edit. (Confirmed here does NOT imply a tracker issue was filed — filing is separate and off by default.)\n' "$AREA" > "$KNOWN_FILE"
   fi
   ADDED=0
   for b in "$RUN_DIR"/bug-*.md; do
     [[ -f "$b" ]] || continue
+    # Only CONFIRMED (or severity-downgraded) bugs advance the frontier. An
+    # unverified keep (verify skipped, budget-exhausted, or verdict-unclear)
+    # must NOT steer the next run away from that surface — otherwise a
+    # never-re-examined false positive systematically under-tests the area.
+    if ! grep -qiE '^Verification: (confirmed|severity downgraded)' "$b"; then
+      continue
+    fi
     title="$(head -1 "$b" | sed 's/^#*[[:space:]]*//' | tr -d '|' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
     url="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
     sev="$(grep -iE '^Severity:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -cd 'A-Za-z')"
     path="${url#https://${SITE_HOST}}"
     [[ -n "$path" ]] || path="$url"
-    newkey="$(printf '%s' "$title" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')##$(norm_url "$url")"
+    nnurl="$(norm_url "$url")"
+    ntitle_alnum="$(printf '%s' "$title" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
+    ntitle_words="$(printf '%s' "$title" | tr 'A-Z' 'a-z' | grep -oE '[a-z]{4,}' | sort -u)"
     dup=0
     while IFS= read -r line; do
       etitle="$(printf '%s' "$line" | sed 's/^- *//' | cut -d'|' -f1)"
       eurl="$(printf '%s' "$line" | cut -d'|' -f2)"
-      ekey="$(printf '%s' "$etitle" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')##$(norm_url "$eurl")"
-      if [[ "$ekey" == "$newkey" ]]; then dup=1; break; fi
+      # Exact match (alnum title + normalised URL).
+      if [[ "$(printf '%s' "$etitle" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')##$(norm_url "$eurl")" == "${ntitle_alnum}##${nnurl}" ]]; then
+        dup=1; break
+      fi
+      # Same normalised URL + a shared 4+ char title word: a bug re-found
+      # under run-to-run wording variance is the SAME bug, not a new line —
+      # otherwise the size cap churns and evicts long-standing entries.
+      if [[ "$(norm_url "$eurl")" == "$nnurl" && -n "$ntitle_words" ]]; then
+        ewords="$(printf '%s' "$etitle" | tr 'A-Z' 'a-z' | grep -oE '[a-z]{4,}' | sort -u)"
+        if comm -12 <(printf '%s\n' "$ntitle_words") <(printf '%s\n' "$ewords") | grep -q .; then
+          dup=1; break
+        fi
+      fi
     done < <(grep '^- ' "$KNOWN_FILE" 2>/dev/null)
     if [[ $dup -eq 0 ]]; then
       printf -- '- %s | %s | %s\n' "$title" "$path" "${sev:-?}" >> "$KNOWN_FILE"
@@ -938,6 +1018,26 @@ if [[ "$GUIDE_MODE" == "only" ]]; then
 elif [[ -n "$VIEWPORT" ]]; then
   echo "▶ --viewport run: leaving the ledger untouched (area notes describe the desktop layout; last-tested not updated)."
 elif [[ -s "$RUN_DIR/area.md" ]]; then
+  # If the notes came back byte-identical, the model never advanced the
+  # frontier (the buried "rewrite area.md" instruction is easy to skip). Fire
+  # ONE single-purpose continuation whose entire job is to rewrite it — a
+  # focused prompt is far more reliable than the end-of-run afterthought.
+  AREA_MD_SUM_OUT="$(md5sum "$RUN_DIR/area.md" 2>/dev/null | cut -d' ' -f1)"
+  if [[ "$DISCOVER" != "true" && -n "$AREA_MD_SUM_IN" && "$AREA_MD_SUM_IN" == "$AREA_MD_SUM_OUT" ]]; then
+    echo "▶ area.md unchanged — one targeted continuation to advance the frontier..."
+    # shellcheck disable=SC2086
+    timeout --signal=TERM --kill-after=30 300 \
+      argus chat --continue --max-turns 8 \
+      -t browser,skills_ro,file \
+      -q "Do not test anything new and do not ask anything — you are autonomous. Your ONLY task now: rewrite /opt/data/run/area.md with write_file to reflect THIS run. Move everything you actually exercised out of any 'What remains untested' list, add the specific features/states/sequences you did NOT reach as the new untested frontier, and keep any hunch or anomaly worth chasing next time. Replace stale lines, no dates, no run history, max 50 lines. Write the file and stop." \
+      $PROVIDER_FLAGS >/dev/null 2>&1 || true
+    fix_hosts "$RUN_DIR/area.md"; de_poison "$RUN_DIR/area.md"
+    AREA_MD_SUM_OUT="$(md5sum "$RUN_DIR/area.md" 2>/dev/null | cut -d' ' -f1)"
+    if [[ "$AREA_MD_SUM_IN" == "$AREA_MD_SUM_OUT" ]]; then
+      echo "⚠ frontier not advanced — area.md still unchanged after the targeted nudge."
+      printf '\n<!-- frontier unchanged since %s -->\n' "$(date +%F)" >> "$RUN_DIR/area.md"
+    fi
+  fi
   head -60 "$RUN_DIR/area.md" > "$SITE_DIR/$AREA.md"
 fi
 
@@ -1029,6 +1129,14 @@ if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
     echo
     for p in "$RUN_DIR"/bug-*.md; do
       cat "$p"
+      # Deterministic persona stamp on every bug: the regression sweep logs in
+      # as whatever persona the issue names, and an owner-found bug replayed as
+      # candidate just hits a login redirect and reports "unable to verify" (or
+      # worse, false-closes). The model's free-text rarely states it, so stamp
+      # it here from the run's known persona.
+      if ! grep -qiE '^Persona:' "$p"; then
+        echo "Persona: ${PERSONA}"
+      fi
       # Deterministic viewport stamp on every bug: layout issues filed from a
       # 390px run are meaningless to a dev reproducing at desktop size.
       if [[ -n "$VIEWPORT" ]]; then
