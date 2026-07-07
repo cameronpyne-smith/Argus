@@ -47,7 +47,9 @@ SUMMARY_PREFIX = (
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
+    "that appears AFTER this summary; if NO user message follows, do not "
+    "wait for one — resume the Active Task autonomously with your next "
+    "action. The current session state (files, "
     "config, etc.) may reflect work described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
@@ -61,6 +63,20 @@ _SUMMARY_TOKENS_CEILING = 12_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+
+
+def _argus_qa_mode() -> bool:
+    """True inside an Argus QA container/exec session.
+
+    ARGUS_SKILLS_READONLY is the one variable baked as image ENV, so it is
+    the only gate that provably exists in `docker exec` sessions — the
+    others only exist where the operator exported them.
+    """
+    return bool(
+        os.environ.get("ARGUS_SKILLS_READONLY")
+        or os.environ.get("ARGUS_LOCAL_MODEL")
+        or os.environ.get("ARGUS_NUM_CTX")
+    )
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
@@ -275,11 +291,17 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         mode = args.get("mode", "replace")
         return f"[patch] {mode} in {path} ({content_len:,} chars result)"
 
-    if tool_name in {"browser_navigate", "browser_click", "browser_snapshot",
-                     "browser_type", "browser_scroll", "browser_vision"}:
+    if tool_name.startswith("browser_"):
         url = args.get("url", "")
         ref = args.get("ref", "")
+        if not url and isinstance(content, str):
+            m = re.search(r'"url"\s*:\s*"([^"]{1,200})"', content)
+            if m:
+                url = m.group(1)
         detail = f" {url}" if url else (f" ref={ref}" if ref else "")
+        fields = args.get("fields")
+        if isinstance(fields, list) and fields:
+            detail += f" ({len(fields)} fields)"
         return f"[{tool_name}]{detail} ({content_len:,} chars)"
 
     if tool_name == "web_search":
@@ -307,6 +329,12 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name in {"skill_view", "skills_list", "skill_manage"}:
         name = args.get("name", "?")
+        if tool_name == "skill_view":
+            return (
+                f"[skill_view] name={name} ({content_len:,} chars) — full text "
+                f"pruned; its rules are NO LONGER in context. Call "
+                f"skill_view('{name}') again before relying on them."
+            )
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
     if tool_name == "vision_analyze":
@@ -469,6 +497,10 @@ class ContextCompressor(ContextEngine):
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
+        # Newest full skill_view content per skill name, harvested before
+        # summarization drops it — re-injected after each compaction in QA
+        # mode so procedural rules survive the whole run.
+        self._loaded_skills: Dict[str, str] = {}
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
@@ -538,6 +570,43 @@ class ContextCompressor(ContextEngine):
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
     # ------------------------------------------------------------------
+
+    def _harvest_skill_views(self, messages: List[Dict[str, Any]]) -> None:
+        """Remember the newest full skill_view content per skill name.
+
+        Summarization drops whole turns, so once a skill_view result leaves
+        the window its rules are gone for the rest of the run. Harvested
+        content (capped) is re-injected into each QA-mode summary.
+        """
+        try:
+            call_id_to_tool: Dict[str, tuple] = {}
+            for msg in messages:
+                if msg.get("role") == "assistant":
+                    for tc in msg.get("tool_calls") or []:
+                        if isinstance(tc, dict):
+                            fn = tc.get("function", {})
+                            call_id_to_tool[tc.get("id", "")] = (
+                                fn.get("name", ""), fn.get("arguments", "")
+                            )
+            for msg in messages:
+                if msg.get("role") != "tool":
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, str) or len(content) < 1000:
+                    continue
+                name, args_str = call_id_to_tool.get(
+                    msg.get("tool_call_id", ""), ("", "")
+                )
+                if name != "skill_view":
+                    continue
+                try:
+                    sk_name = json.loads(args_str).get("name", "")
+                except Exception:
+                    sk_name = ""
+                if sk_name:
+                    self._loaded_skills[sk_name] = content[:24_000]
+        except Exception as e:
+            logger.debug("skill_view harvest failed: %s", e)
 
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
@@ -643,8 +712,43 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
+        # Never stub the newest skill_view per skill (the QA rulebook — a
+        # 64K run that loses it files exactly the false positives it forbids)
+        # nor the newest snapshot-bearing browser result (the model's only
+        # record of where it currently is).
+        keep_indices: set = set()
+        newest_skill_view: Dict[str, int] = {}
+        newest_snapshot_idx = -1
+        for i in range(len(result) - 1, -1, -1):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or len(content) <= 200:
+                continue
+            call_id = msg.get("tool_call_id", "")
+            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            if tool_name == "skill_view":
+                try:
+                    sk_name = json.loads(tool_args).get("name", "?")
+                except Exception:
+                    sk_name = "?"
+                if sk_name not in newest_skill_view:
+                    newest_skill_view[sk_name] = i
+            elif (
+                newest_snapshot_idx < 0
+                and tool_name.startswith("browser_")
+                and '"snapshot"' in content
+            ):
+                newest_snapshot_idx = i
+        keep_indices.update(newest_skill_view.values())
+        if newest_snapshot_idx >= 0:
+            keep_indices.add(newest_snapshot_idx)
+
         # Pass 2: Replace old tool results with informative summaries
         for i in range(prune_boundary):
+            if i in keep_indices:
+                continue
             msg = result[i]
             if msg.get("role") != "tool":
                 continue
@@ -866,12 +970,15 @@ class ContextCompressor(ContextEngine):
         # and re-tested areas. Env-gated so ordinary Hermes sessions keep the
         # unmodified template.
         _qa_sections = ""
-        if os.environ.get("ARGUS_LOCAL_MODEL") or os.environ.get("ARGUS_NUM_CTX"):
+        if _argus_qa_mode():
             _qa_sections = """## Bugs Recorded This Run
 [QA runs: every bug already CONFIRMED and written to /opt/data/run/bug-*.md — one line each: filename — title — URL. These are DONE: never re-test, re-record, or re-file them.]
 
 ## Coverage So Far
 [QA runs: which areas / checklist items were already tested this run and their outcome, and what remains untested — testing must resume on NEW ground, never repeat covered checks.]
+
+## Current Location
+[QA runs: the EXACT URL currently loaded in the browser (copy it verbatim from the latest navigation/snapshot result), the logged-in persona, and any in-progress form or wizard state.]
 
 """
 
@@ -1466,6 +1573,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     display_tokens, self.context_length, tail_budget,
                 )
 
+        self._harvest_skill_views(messages)
+
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n,
@@ -1502,7 +1611,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         )
         if summary_idx is not None:
             if summary_body and not self._previous_summary:
-                self._previous_summary = summary_body
+                self._previous_summary = summary_body.split(
+                    "\n## Loaded Skill Reference", 1
+                )[0]
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
 
         if not self.quiet_mode:
@@ -1552,12 +1663,32 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
+            if self._previous_summary:
+                summary = (
+                    f"{SUMMARY_PREFIX}\n{self._previous_summary}\n\n"
+                    f"[Note: summary regeneration failed this pass — the summary "
+                    f"above is from the previous compaction; {n_dropped} newer "
+                    f"message(s) were dropped unsummarized.]"
+                )
+            else:
+                summary = (
+                    f"{SUMMARY_PREFIX}\n"
+                    f"Summary generation was unavailable. {n_dropped} message(s) were "
+                    f"removed to free context space but could not be summarized. The removed "
+                    f"messages contained earlier work in this session. Continue based on the "
+                    f"recent messages below and the current state of any files or resources."
+                )
+
+        if _argus_qa_mode() and self._loaded_skills:
+            skill_parts = []
+            for sk_name, sk_text in self._loaded_skills.items():
+                skill_parts.append(f"### skill: {sk_name}\n{sk_text}")
             summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
+                summary
+                + "\n\n## Loaded Skill Reference\n"
+                + "[Re-injected after compaction — these skill rules remain in "
+                + "force for the whole run.]\n\n"
+                + "\n\n".join(skill_parts)
             )
 
         _merge_summary_into_tail = False
@@ -1591,7 +1722,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             summary = (
                 summary
                 + "\n\n--- END OF CONTEXT SUMMARY — "
-                "respond to the message below, not the summary above ---"
+                "this is context, not new input; if no user message follows, continue the Active Task autonomously ---"
             )
 
         if not _merge_summary_into_tail:
@@ -1603,7 +1734,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 merged_prefix = (
                     summary
                     + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
+                    "this is context, not new input; if no user message follows, continue the Active Task autonomously ---\n\n"
                 )
                 msg["content"] = _append_text_to_content(
                     msg.get("content"),
