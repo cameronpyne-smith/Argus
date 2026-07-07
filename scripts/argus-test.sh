@@ -737,13 +737,22 @@ norm_url() {  # trim whitespace, strip scheme+host, query, and id-ish path segme
   # entries.
   printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E "s/^[[:space:]]+//; s/[[:space:]]+\$//; s#^https?://[^/]+##; s/\?.*\$//; s#/[0-9a-f]{8}-[0-9a-f-]{4,}#/:id#g; s#/[0-9]+#/:id#g; s#/+\$##"
 }
+# Extract a bug field (URL / Severity / Persona) tolerant of markdown emphasis:
+# the model often writes '**URL**: ...' or '**URL:** ...' rather than plain
+# 'URL:'. A plain '^URL:' grep misses those, which silently emptied the URL for
+# every downstream step (dedup, drift filter, known.md path + norm_url). Strip
+# leading/trailing * _ and space around the header and the value.
+bug_field() {  # $1=file  $2=field name (URL|Severity|Persona)
+  grep -iE "^[[:space:]*_]*${2}[[:space:]*_]*:" "$1" 2>/dev/null | head -1 \
+    | sed -E "s/^[[:space:]*_]*${2}[[:space:]*_]*:[[:space:]*_]*//I; s/[[:space:]*_]+\$//"
+}
 if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
   mkdir -p "$RUN_DIR/duplicates"
   declare -A DEDUP_CANON
   MERGED=0
   for b in "$RUN_DIR"/bug-*.md; do
     [[ -f "$b" ]] || continue
-    url="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+    url="$(bug_field "$b" URL)"
     nurl="$(norm_url "$url")"
     # Only trust a numeric code as an HTTP-error symptom when it appears ON a
     # line that itself carries error context — extracting from the whole file
@@ -826,7 +835,7 @@ if [[ "$DISCOVER" != "true" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
     fi
     # (b) URL drift: the bug URL sits under a DIFFERENT known area of ANY persona.
     if [[ -z "$reason" && -n "$AREA_PATH_SCOPE" && "$AREA_PATH_SCOPE" != "/" ]]; then
-      bu="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+      bu="$(bug_field "$b" URL)"
       if [[ -n "$bu" && "$bu" != "https://${SITE_HOST}${AREA_PATH_SCOPE}"* ]]; then
         if awk -F'|' -v u="$bu" -v me="$AREA" -v host="https://${SITE_HOST}" '
              /^#/ {next}
@@ -936,8 +945,8 @@ Write that file, then stop. Do not record new bugs and do not test anything beyo
       downgrade*)
         newsev="$(grep -iE '^SEVERITY:' "$verdict_file" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | grep -oiE '^(Critical|High|Medium|Low)' | head -1)"
         if [[ -n "$newsev" ]]; then
-          oldsev="$(grep -iE '^Severity:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
-          sed -i "s/^[Ss][Ee][Vv][Ee][Rr][Ii][Tt][Yy]:.*/Severity: ${newsev}/" "$b"
+          oldsev="$(bug_field "$b" Severity)"
+          sed -i -E "s/^[[:space:]*_]*[Ss][Ee][Vv][Ee][Rr][Ii][Tt][Yy][[:space:]*_]*:.*/Severity: ${newsev}/" "$b"
           echo "    ↓ DOWNGRADED ${oldsev:-?} → ${newsev} — ${reason:-no reason given}"
           printf '\nVerification: severity downgraded from %s to %s on independent re-test — %s\n' "${oldsev:-?}" "$newsev" "${reason:-no reason given}" >> "$b"
         else
@@ -985,8 +994,8 @@ if [[ "$DISCOVER" != "true" && "$GUIDE_MODE" != "only" && -z "$VIEWPORT" ]] && l
       continue
     fi
     title="$(head -1 "$b" | sed 's/^#*[[:space:]]*//' | tr -d '|' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
-    url="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
-    sev="$(grep -iE '^Severity:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -cd 'A-Za-z')"
+    url="$(bug_field "$b" URL)"
+    sev="$(bug_field "$b" Severity | tr -cd 'A-Za-z')"
     path="${url#https://${SITE_HOST}}"
     [[ -n "$path" ]] || path="$url"
     nnurl="$(norm_url "$url")"
@@ -1003,7 +1012,11 @@ if [[ "$DISCOVER" != "true" && "$GUIDE_MODE" != "only" && -z "$VIEWPORT" ]] && l
       # Same normalised URL + a shared 4+ char title word: a bug re-found
       # under run-to-run wording variance is the SAME bug, not a new line —
       # otherwise the size cap churns and evicts long-standing entries.
-      if [[ "$(norm_url "$eurl")" == "$nnurl" && -n "$ntitle_words" ]]; then
+      # Guard on a NON-EMPTY URL: if extraction failed for both bugs (empty
+      # nnurl), "same URL" is vacuously true and any shared title word would
+      # wrongly collapse two distinct bugs — the exact failure that dropped a
+      # confirmed timesheet 500 from the feed.
+      if [[ -n "$nnurl" && "$(norm_url "$eurl")" == "$nnurl" && -n "$ntitle_words" ]]; then
         ewords="$(printf '%s' "$etitle" | tr 'A-Z' 'a-z' | grep -oE '[a-z]{4,}' | sort -u)"
         if comm -12 <(printf '%s\n' "$ntitle_words") <(printf '%s\n' "$ewords") | grep -q .; then
           dup=1; break
@@ -1161,7 +1174,7 @@ if ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
       # candidate just hits a login redirect and reports "unable to verify" (or
       # worse, false-closes). The model's free-text rarely states it, so stamp
       # it here from the run's known persona.
-      if ! grep -qiE '^Persona:' "$p"; then
+      if ! grep -qiE "^[[:space:]*_]*Persona[[:space:]*_]*:" "$p"; then
         echo "Persona: ${PERSONA}"
       fi
       # Deterministic viewport stamp on every bug: layout issues filed from a
