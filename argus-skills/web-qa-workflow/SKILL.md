@@ -27,7 +27,13 @@ summary: How to explore a web app, what counts as a bug, and how to report findi
    `browser_press` and `browser_back` each include the resulting page snapshot in their
    result — read it instead of spending a separate `browser_snapshot` call. Only call
    `browser_snapshot` explicitly to refresh a page that changed on its own, or with
-   `full=true` for complete content.
+   `full=true` for complete content (including static text). Snapshots are truncated
+   from the top at ~8000 chars; on a long page pass `offset=<line>` (the truncation
+   note names the exact line) to page down to content below the fold — do NOT conclude
+   a control is missing just because it was past the cut. If a snapshot comes back
+   unusually sparse, that means the page is still rendering or is shadow-DOM heavy, not
+   that the UI is absent: `browser_wait`, retake, and confirm with `browser_vision`
+   before judging.
 
 5. **Exhaust alternatives before concluding something is broken.** If one approach fails, try another.
    A click that does nothing is worth retrying with a different method before reporting it.
