@@ -931,15 +931,17 @@ class TestPinnedGuard:
         assert blocked["success"] is False
         assert allowed["success"] is True
 
-    def test_broken_sidecar_fails_open(self, tmp_path):
-        """If skill_usage.get_record raises, we allow delete through.
+    def test_broken_sidecar_fails_closed(self, tmp_path):
+        """If skill_usage.get_record raises, the delete is REFUSED.
 
-        Rationale: a corrupted telemetry file shouldn't lock the agent out
-        of skills it would otherwise be allowed to touch.
+        Rationale (hardening, commit cfe77c598): a corrupted telemetry file
+        means we cannot prove the skill is NOT pinned, so a broken sidecar
+        must not quietly disarm the one guard protecting pinned skills from
+        irrecoverable loss. Fail closed, not open.
         """
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             with patch("tools.skill_usage.get_record",
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
-        assert result["success"] is True
+        assert result["success"] is False
