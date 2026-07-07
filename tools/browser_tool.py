@@ -1429,7 +1429,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
+        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content including static text. Snapshots over 8000 chars are truncated from the TOP — pass offset=<line number> to view later sections of a long page (the truncation note tells you which line to continue from). Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1437,6 +1437,11 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "boolean",
                     "description": "If true, returns complete page content. If false (default), returns compact view with interactive elements only.",
                     "default": False
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip this many leading lines of the snapshot before applying the size limit — use it to page through content the truncation note says was cut.",
+                    "default": 0
                 }
             },
             "required": []
@@ -2311,38 +2316,53 @@ def _extract_relevant_content(
         return _truncate_snapshot(snapshot_text)
 
 
-def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
+def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000, offset: int = 0) -> str:
     """Structure-aware truncation for snapshots.
 
     Cuts at line boundaries so that accessibility tree elements are never
     split mid-line, and appends a note telling the agent how much was
-    omitted.
+    omitted and how to page to it. ``offset`` skips that many leading lines
+    first, so a long page can be read in windows rather than the head being
+    the only region ever visible.
 
     Args:
         snapshot_text: The snapshot text to truncate
         max_chars: Maximum characters to keep
+        offset: Number of leading lines to skip before applying the limit
 
     Returns:
         Truncated text with indicator if truncated
     """
-    if len(snapshot_text) <= max_chars:
+    if offset <= 0 and len(snapshot_text) <= max_chars:
         return snapshot_text
 
-    lines = snapshot_text.split('\n')
+    all_lines = snapshot_text.split('\n')
+    total = len(all_lines)
+    offset = max(0, min(offset, max(0, total - 1)))
+    lines = all_lines[offset:]
     result: list[str] = []
     chars = 0
+    if offset > 0:
+        header = f'[... showing from line {offset + 1} of {total} — earlier lines skipped by offset]'
+        result.append(header)
+        chars += len(header) + 1
     for line in lines:
-        if chars + len(line) + 1 > max_chars - 80:  # reserve space for note
+        if chars + len(line) + 1 > max_chars - 120:  # reserve space for note
             break
         result.append(line)
         chars += len(line) + 1
-    if not result:
+    if len(result) == (1 if offset > 0 else 0):
         # Single-line/minified snapshot whose first line alone exceeds the
         # budget — a raw slice beats returning only the truncation note.
-        result.append(snapshot_text[:max_chars - 80])
-    remaining = len(lines) - len(result)
+        result.append(lines[0][:max_chars - 120] if lines else snapshot_text[:max_chars - 120])
+    shown = len(result) - (1 if offset > 0 else 0)
+    remaining = total - offset - shown
     if remaining > 0:
-        result.append(f'\n[... {remaining} more lines truncated, use browser_snapshot for full content]')
+        result.append(
+            f'\n[... {remaining} more lines truncated — call browser_snapshot '
+            f'with offset={offset + shown} (add full=true for static text) to '
+            f'continue from where this cut off]'
+        )
     return '\n'.join(result)
 
 
@@ -2367,6 +2387,18 @@ _UI_ALERT_ERROR_WORD_RE = re.compile(
 _UI_ERROR_REF_RE = re.compile(r"\[ref=[^\]]*\]")
 _UI_ERROR_MAX_SURFACED = 3
 _UI_ERROR_LINE_MAX_CHARS = 200
+
+
+def _attach_sparse_snapshot_hint(response: dict, snapshot_text: str, refs) -> None:
+    if len(snapshot_text or "") < 200 or not refs:
+        response["sparse_snapshot_hint"] = (
+            "This snapshot is unusually sparse — that usually means the page "
+            "is still rendering, is canvas/shadow-DOM heavy, or the tree "
+            "capture glitched; it does NOT prove the UI is missing. "
+            "browser_wait, retake the snapshot, and confirm with "
+            "browser_vision before concluding anything is absent — never "
+            "report missing UI from a sparse snapshot alone."
+        )
 
 
 def _take_plain_snapshot(effective_task_id: str) -> Optional[str]:
@@ -2588,6 +2620,7 @@ def _attach_post_action_snapshot(
         snapshot_text = _truncate_snapshot(snapshot_text)
     response["snapshot"] = snapshot_text
     response["element_count"] = len(refs) if refs else 0
+    _attach_sparse_snapshot_hint(response, snapshot_text, refs)
     if snap.get("fallback_warning") and not response.get("fallback_warning"):
         _copy_fallback_warning(response, snap)
 
@@ -2682,13 +2715,39 @@ def _attach_new_error_signals(effective_task_id: str, response: dict) -> None:
                 dedupe_url = url.split("?", 1)[0].split("#", 1)[0]
                 key = f"{status} {method} {dedupe_url}".strip()
                 if key not in seen and key not in fresh:
-                    fresh[key] = f"{status} {method} {url}".strip()
+                    fresh[key] = (
+                        f"{status} {method} {url}".strip(),
+                        req.get("requestId") or "",
+                    )
             if fresh:
                 # Mark only the SURFACED errors as seen — anything beyond the
                 # cap resurfaces on a later poll instead of being swallowed.
                 surfaced_keys = list(fresh)[:5]
                 seen.update(surfaced_keys)
-                response["new_server_errors"] = [fresh[k] for k in surfaced_keys]
+                surfaced_errors = []
+                for k in surfaced_keys:
+                    text, req_id = fresh[k]
+                    # The response body is the actionable half of a 5xx (the
+                    # stack trace / error code a dev needs) — fetch it for the
+                    # first few surfaced faults, best-effort.
+                    if req_id and len(surfaced_errors) < 3:
+                        try:
+                            detail = _run_browser_command(
+                                effective_task_id,
+                                "network", ["request", req_id],
+                                timeout=10,
+                            )
+                            body = (
+                                detail.get("data", {}).get("responseBody")
+                                if detail.get("success") else None
+                            )
+                            if body:
+                                body = " ".join(str(body).split())[:500]
+                                text = f"{text} — response body: {body}"
+                        except Exception as e:
+                            logger.debug("5xx body fetch failed: %s", e)
+                    surfaced_errors.append(text)
+                response["new_server_errors"] = surfaced_errors
                 response["server_error_hint"] = (
                     "The page triggered HTTP 5xx server error(s) during this "
                     "action — a real backend bug even if the UI showed nothing "
@@ -2987,6 +3046,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     snapshot_text = _truncate_snapshot(snapshot_text)
                 response["snapshot"] = snapshot_text
                 response["element_count"] = len(refs) if refs else 0
+                _attach_sparse_snapshot_hint(response, snapshot_text, refs)
                 if snap_result.get("fallback_warning") and not response.get("fallback_warning"):
                     _copy_fallback_warning(response, snap_result)
         except Exception as e:
@@ -3027,7 +3087,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 def browser_snapshot(
     full: bool = False,
     task_id: Optional[str] = None,
-    user_task: Optional[str] = None
+    user_task: Optional[str] = None,
+    offset: int = 0
 ) -> str:
     """
     Get a text-based snapshot of the current page's accessibility tree.
@@ -3036,6 +3097,7 @@ def browser_snapshot(
         full: If True, return complete snapshot. If False, return compact view.
         task_id: Task identifier for session isolation
         user_task: The user's current task (for task-aware extraction)
+        offset: Skip this many leading snapshot lines before the size limit
 
     Returns:
         JSON string with page snapshot
@@ -3082,8 +3144,16 @@ def browser_snapshot(
             _scan_text = _plain if _plain else snapshot_text
 
         _pre_truncation_text = snapshot_text
-        # Check if snapshot needs summarization
-        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
+        # Check if snapshot needs summarization. An explicit offset means the
+        # model is paging through the raw tree — never reroute that through
+        # LLM extraction.
+        try:
+            offset = max(0, int(offset or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        if offset > 0:
+            snapshot_text = _truncate_snapshot(snapshot_text, offset=offset)
+        elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
             snapshot_text = _extract_relevant_content(snapshot_text, user_task)
         elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
             snapshot_text = _truncate_snapshot(snapshot_text)
@@ -3093,6 +3163,7 @@ def browser_snapshot(
             "snapshot": snapshot_text,
             "element_count": len(refs) if refs else 0
         }
+        _attach_sparse_snapshot_hint(response, _pre_truncation_text, refs)
         _attach_ui_error_signal(effective_task_id, response, _scan_text)
         _copy_fallback_warning(response, result)
 
@@ -3162,10 +3233,18 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         _attach_post_action_snapshot(effective_task_id, response, detect_no_change=True)
         return json.dumps(response, ensure_ascii=False)
     else:
+        err_text = result.get("error", f"Failed to click {ref}")
         response = {
             "success": False,
-            "error": result.get("error", f"Failed to click {ref}")
+            "error": err_text
         }
+        if re.search(r"(?i)not found|no such element|stale|timed? ?out|not visible|not attached", str(err_text)):
+            response["click_hint"] = (
+                "Refs go stale after ANY DOM change — this failure almost "
+                "always means the ref is outdated, not that the control is "
+                "broken or missing. Take a fresh browser_snapshot and click "
+                "the NEW ref; this is a tool/ref issue, not a site bug."
+            )
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
