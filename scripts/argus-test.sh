@@ -429,6 +429,12 @@ else
 fi
 LOGIN_STEP="Log in to https://${SITE_HOST} as persona '${PERSONA}' before testing, following the 'Logging in' procedure in the web-qa-workflow skill. ${CRED_LINE} In short: open the site's login page, browser_snapshot it, browser_type the email and password into their fields, read each value back to confirm it stuck (if a field is empty your ref went stale — re-snapshot and type again), browser_click the submit button, then confirm the URL has left the login page. If you land on a setup/MFA/consent interstitial that is not the app itself, click its skip / later / dismiss control. These credentials are valid, so a 'sign-in failed' message means the value did not register (stale ref) — re-snapshot and retype; never try other credentials or other login methods, and never file the login flow as a bug."
 
+# Persona lock — the run wandered once because the authorization checklist ('navigate
+# to cross-persona URLs') was read as 'log in as that other persona'. Authorization
+# testing means probing a foreign URL WHILE STILL logged in as this persona and
+# confirming you are denied — never actually switching accounts.
+PERSONA_LOCK="PERSONA LOCK (non-negotiable): you are '${PERSONA}' for the ENTIRE run. NEVER log out, NEVER log in as or switch to any other persona, and NEVER type another persona's credentials — not even to test authorization. Authorization testing = while STILL logged in as '${PERSONA}', navigate to a foreign/cross-persona URL and confirm you are cleanly DENIED (redirect to login, 403, or 404); a 500 / generic 'Oops' error there is the bug. If you ever catch yourself about to enter different credentials or a bug's steps would require a different persona to reproduce, STOP — that is drift, not a test: note it in one line to /opt/data/run/new-areas.md and return to the '${AREA}' area as '${PERSONA}'. Every bug you record MUST be reproducible starting from a '${PERSONA}' login; if it is not, do not record it."
+
 # ── Run dir: ALL agent file IO happens in /opt/data/run — one short path the
 # model can reliably retain under context compression.
 # A clean run MOVES the run dir into reports/parts/ at the end, so bug files
@@ -558,7 +564,7 @@ When you have walked all navigation — or are running low on turns:
     $PROVIDER_FLAGS || AGENT_RC=$?
   note_session_health "$AGENT_RC" "$((SECONDS - SESSION_T0))"
 else
-  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. FIRST, before anything else: if you have ALREADY confirmed any bug this run that you have NOT yet written to a file, write_file it NOW — do not keep testing while a confirmed bug is unsaved. Then continue testing the '${AREA}' area per your original instructions. Record every confirmed bug the INSTANT you confirm it (your very next tool call is write_file) to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). Never say 'let me record this and continue' and then continue without writing — write the file first. Do NOT write /opt/data/run/summary.md until every applicable deep-coverage item from your original instructions has been attempted OR recorded as blocked. Work them in this order: (1) authorization — mutate any id in the URL and navigate to the cross-persona URLs from site-config; (2) persistence across reload; (3) browser back/forward/refresh; (4) double-submit; (5) full create→edit→delete lifecycle. Treat each item as independent: if a feature is broken and blocks its item, write its bug file immediately, mark the item blocked, and move on — do not get stuck re-testing it across continuations. A button that does nothing or stays disabled is usually a stale ref or an uncommitted required field, not a bug — re-snapshot and confirm committed values before filing, and never force it with JavaScript. Once every item is attempted or blocked, rewrite /opt/data/run/area.md (current facts, what remains untested, plus any hunch or anomaly worth chasing next time; max 50 lines) and write /opt/data/run/summary.md (each item's outcome).${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}${KNOWN_NUDGE_LINE}"
+  NUDGE_PROMPT="You stopped before finishing. Do not ask the user anything — you are autonomous. FIRST, before anything else: if you have ALREADY confirmed any bug this run that you have NOT yet written to a file, write_file it NOW — do not keep testing while a confirmed bug is unsaved. Then continue testing the '${AREA}' area per your original instructions. Record every confirmed bug the INSTANT you confirm it (your very next tool call is write_file) to /opt/data/run/bug-<short-slug>.md — a distinct kebab-case slug from each bug title (e.g. bug-save-button-disabled.md) so you never overwrite an earlier bug file; reuse the exact name only if re-recording the same bug (title, exact URL, steps, expected, actual, severity, Screenshot line). Never say 'let me record this and continue' and then continue without writing — write the file first. Do NOT write /opt/data/run/summary.md until every applicable deep-coverage item from your original instructions has been attempted OR recorded as blocked. Work them in this order: (1) authorization — mutate any id in the URL and navigate to cross-persona URLs from site-config WHILE STILL logged in as '${PERSONA}' (never switch accounts — see below), expecting a clean denial; (2) persistence across reload; (3) browser back/forward/refresh; (4) double-submit; (5) full create→edit→delete lifecycle. ${PERSONA_LOCK} Treat each item as independent: if a feature is broken and blocks its item, write its bug file immediately, mark the item blocked, and move on — do not get stuck re-testing it across continuations. A button that does nothing or stays disabled is usually a stale ref or an uncommitted required field, not a bug — re-snapshot and confirm committed values before filing, and never force it with JavaScript. Once every item is attempted or blocked, rewrite /opt/data/run/area.md (current facts, what remains untested, plus any hunch or anomaly worth chasing next time; max 50 lines) and write /opt/data/run/summary.md (each item's outcome).${GUIDE_NUDGE_LINE}${VIEWPORT_NUDGE_LINE}${KNOWN_NUDGE_LINE}"
   SESSION_T0=$SECONDS
   AGENT_RC=0
   # shellcheck disable=SC2086
@@ -575,6 +581,7 @@ Rules:
 - RECORD EACH BUG THE INSTANT YOU CONFIRM IT — this is the MOST IMPORTANT rule and the one most often broken. The moment you are sure something is a bug, your VERY NEXT tool call is write_file to /opt/data/run/bug-<slug>.md (one file per bug). NEVER say 'let me record this and continue' / 'let me note this and move on' and then keep testing or navigating — that is how real bugs get lost. Write the file FIRST, THEN continue. Bugs are saved one at a time, as you find them, all through the run — never batched to write 'at the end' or 'after the checklist'. Recording is CONTINUOUS and separate from finishing: the summary/area-notes step at the end governs only when to STOP, and is never a reason to defer writing a bug you have already confirmed.
 - Test through the browser UI only, like a real user. Never call the backend API directly, and only use the persona '${PERSONA}' credentials from site-config.
 - You are testing the '${AREA}' area, NOT the login flow. Do not test, re-submit, or 'verify' the login form, and never log out. If you get redirected to /login mid-run, just repeat the login procedure (snapshot, type the same credentials, submit) to get back in — that is routine, not a bug, and never file it as one.
+- ${PERSONA_LOCK}
 - NEVER type credentials you made up. The only valid login is the exact email+password in site-config. A login that rejects any other credentials is working correctly — not a bug.
 - The ONLY valid site domain is https://${SITE_HOST} — if you remember any other domain, it is wrong.
 - Do not ask for direction. If something does not work, try a different approach on your own.
@@ -582,7 +589,7 @@ Rules:
 - The browser console is only for confirming a UI bug you already observed. Do not spend turns analysing console logs, network requests or backend endpoints on their own. (Exception: an HTTP 5xx surfaced automatically as new_server_errors, or on-page error text surfaced as new_ui_errors during a normal operation you did not deliberately break, IS a bug to record — those signals come to you, they are not spelunking.)
 - Use browser_snapshot to read pages. Call browser_vision only to capture a bug screenshot or when the snapshot genuinely cannot show something visual — its output is huge and crowds out your context.
 - Start with the 'What remains untested' items in area.md and exhaust those first; then keep going deeper. Use different test inputs than previous runs.
-- Do NOT stop at basic input validation — that is the shallow layer. Deliberately exercise the deeper bug classes and access-control probes described in the web-qa-workflow skill: persistence across reload/re-login, the full create→edit→delete lifecycle, interrupted/resumed wizards, browser back/forward and double-submit, dependent-field transitions, error recovery, cross-view consistency (after any create/edit/delete, read at least two views of the same data — counts, lists, detail pages, dropdowns — and confirm they still agree; two views that disagree is itself the bug, no visible error needed), round-trip fidelity (after saving an awkward value — long, unicode, high-precision, an edge date — reload the record and confirm what comes back equals EXACTLY what you typed; silent truncation, rounding, dropped special characters or timezone shifts are the bug even with no error shown), and mutating an id in the URL (or navigating to a cross-persona URL from site-config) to test authorization. These are where the bugs shallow testing misses actually live — spend real effort here.
+- Do NOT stop at basic input validation — that is the shallow layer. Deliberately exercise the deeper bug classes and access-control probes described in the web-qa-workflow skill: persistence across reload/re-login, the full create→edit→delete lifecycle, interrupted/resumed wizards, browser back/forward and double-submit, dependent-field transitions, error recovery, cross-view consistency (after any create/edit/delete, read at least two views of the same data — counts, lists, detail pages, dropdowns — and confirm they still agree; two views that disagree is itself the bug, no visible error needed), round-trip fidelity (after saving an awkward value — long, unicode, high-precision, an edge date — reload the record and confirm what comes back equals EXACTLY what you typed; silent truncation, rounding, dropped special characters or timezone shifts are the bug even with no error shown), and mutating an id in the URL (or navigating to a cross-persona URL from site-config) to test authorization — staying logged in as '${PERSONA}' throughout, expecting a clean denial (see the PERSONA LOCK rule; never switch accounts). These are where the bugs shallow testing misses actually live — spend real effort here.
 
 Process:
 1. ${LOGIN_STEP}
@@ -795,29 +802,49 @@ fi
 # session of the budget that legitimate bugs then lose. Move such bugs aside
 # BEFORE the verify loop: recorded, excluded from this area's verify/feed, and
 # noted so a run on the owning area can pick them up.
-if [[ "$DISCOVER" != "true" && -n "$AREA_URL" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
+if [[ "$DISCOVER" != "true" ]] && ls "$RUN_DIR"/bug-*.md >/dev/null 2>&1; then
   AREA_PATH_SCOPE="${AREA_URL#https://${SITE_HOST}}"
-  if [[ -n "$AREA_PATH_SCOPE" && "$AREA_PATH_SCOPE" != "/" ]]; then
-    mkdir -p "$RUN_DIR/out-of-scope"
-    OOS=0
-    for b in "$RUN_DIR"/bug-*.md; do
-      [[ -f "$b" ]] || continue
-      bu="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
-      [[ -n "$bu" ]] || continue
-      [[ "$bu" == "https://${SITE_HOST}${AREA_PATH_SCOPE}"* ]] && continue
-      if awk -F'|' -v u="$bu" -v p="$PERSONA" -v me="$AREA" -v host="https://${SITE_HOST}" '
-           /^#/ {next}
-           { for (i=1;i<=3;i++) gsub(/^[ \t]+|[ \t]+$/, "", $i) }
-           $3==p && $1!=me && $2!=host"/dashboard" && index(u, $2)==1 { found=1 }
-           END { exit !found }' "$INDEX"; then
-        printf '\nVerification: out-of-scope — URL belongs to another area, not %s; not verified from this persona/area run.\n' "$AREA" >> "$b"
-        mv "$b" "$RUN_DIR/out-of-scope/$(basename "$b")" 2>/dev/null || true
-        OOS=$((OOS + 1))
-      fi
-    done
-    if [[ $OOS -gt 0 ]]; then
-      echo "▶ Scope filter: set aside ${OOS} out-of-area bug(s) before verify (archived in out-of-scope/, excluded from this area's report/feed)."
+  # Personas OTHER than this run's, from the index — used to catch CROSS-PERSONA
+  # drift (a candidate run that logged in as owner and filed an owner bug). A
+  # bug whose own steps require a different persona to reproduce can never be
+  # re-checked by this run's verifier and does not belong to this area's ledger.
+  OTHER_PERSONAS="$(awk -F'|' -v p="$PERSONA" '/^#/{next} NF>=3 {gsub(/^[ \t]+|[ \t]+$/,"",$3); if ($3!="" && $3!=p) print $3}' "$INDEX" | sort -u)"
+  OTHER_PERSONA_RE=""
+  if [[ -n "$OTHER_PERSONAS" ]]; then
+    OTHER_PERSONA_RE="$(printf '%s' "$OTHER_PERSONAS" | paste -sd'|' -)"
+  fi
+  mkdir -p "$RUN_DIR/out-of-scope"
+  OOS=0
+  for b in "$RUN_DIR"/bug-*.md; do
+    [[ -f "$b" ]] || continue
+    reason=""
+    # (a) Cross-persona drift: the bug's steps require logging in as a persona
+    # other than this run's. Strongest, most reliable signal.
+    if [[ -n "$OTHER_PERSONA_RE" ]] && \
+       grep -qiE "(log ?in|sign ?in|logged ?in|authenticate).{0,40}\b(${OTHER_PERSONA_RE})\b|\bas the (${OTHER_PERSONA_RE})\b|persona '(${OTHER_PERSONA_RE})'|\b(${OTHER_PERSONA_RE}) persona\b" "$b"; then
+      reason="requires a different persona to reproduce (cross-persona drift)"
     fi
+    # (b) URL drift: the bug URL sits under a DIFFERENT known area of ANY persona.
+    if [[ -z "$reason" && -n "$AREA_PATH_SCOPE" && "$AREA_PATH_SCOPE" != "/" ]]; then
+      bu="$(grep -iE '^URL:' "$b" | head -1 | sed 's/^[^:]*:[[:space:]]*//')"
+      if [[ -n "$bu" && "$bu" != "https://${SITE_HOST}${AREA_PATH_SCOPE}"* ]]; then
+        if awk -F'|' -v u="$bu" -v me="$AREA" -v host="https://${SITE_HOST}" '
+             /^#/ {next}
+             { for (i=1;i<=3;i++) gsub(/^[ \t]+|[ \t]+$/, "", $i) }
+             $1!=me && $2!=host"/dashboard" && length($2)>0 && index(u, $2)==1 { found=1 }
+             END { exit !found }' "$INDEX"; then
+          reason="URL belongs to another area, not ${AREA}"
+        fi
+      fi
+    fi
+    if [[ -n "$reason" ]]; then
+      printf '\nVerification: out-of-scope — %s; not verified from this persona/area run.\n' "$reason" >> "$b"
+      mv "$b" "$RUN_DIR/out-of-scope/$(basename "$b")" 2>/dev/null || true
+      OOS=$((OOS + 1))
+    fi
+  done
+  if [[ $OOS -gt 0 ]]; then
+    echo "▶ Scope filter: set aside ${OOS} out-of-scope/cross-persona bug(s) before verify (archived in out-of-scope/, excluded from this area's report/feed)."
   fi
 fi
 
