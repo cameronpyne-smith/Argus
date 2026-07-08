@@ -163,6 +163,13 @@ def _merge_browser_path(existing_path: str = "") -> str:
 
     return os.pathsep.join(prefix_parts + path_parts)
 
+
+def _build_browser_env() -> Dict[str, str]:
+    """Process env for agent-browser subprocesses with browser PATH fallbacks."""
+    env = {**os.environ}
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+    return env
+
 # Throttle screenshot cleanup to avoid repeated full directory scans.
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 
