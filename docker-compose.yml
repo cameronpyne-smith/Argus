@@ -26,7 +26,8 @@ services:
     build: .
     image: hermes-agent
     container_name: argus
-    restart: unless-stopped
+    restart: no
+    userns_mode: host
     network_mode: host
     volumes:
       - ~/.argus:/opt/data
@@ -74,7 +75,8 @@ services:
   dashboard:
     image: hermes-agent
     container_name: hermes-dashboard
-    restart: unless-stopped
+    restart: no
+    userns_mode: host
     network_mode: host
     depends_on:
       - gateway
